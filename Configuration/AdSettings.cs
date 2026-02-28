@@ -31,8 +31,19 @@ public class AdSettings
     public string ExchangePowerShellUri { get; set; } = string.Empty;
 
     /// <summary>
-    /// When true, UpdateUser will overwrite GivenName / Surname / DisplayName in AD.
+    /// When true, UpdateUser will overwrite GivenName / Surname / DisplayName in AD
+    /// and rename the CN if the name changes.
     /// Set to false if names should be treated as immutable after account creation.
     /// </summary>
     public bool UpdateDisplayName { get; set; } = true;
+
+    /// <summary>
+    /// Maps office name to a target OU distinguished name.
+    /// Used during CreateUser to determine which OU to place the new account in.
+    /// If the office in the request has no matching key, DefaultUserOu is used.
+    /// Example:
+    ///   "NRW":    "OU=Users,OU=NRW,DC=company,DC=local"
+    ///   "Moscow": "OU=Users,OU=Moscow,DC=company,DC=local"
+    /// </summary>
+    public Dictionary<string, string> OfficeOuMappings { get; set; } = new();
 }

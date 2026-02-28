@@ -3,6 +3,7 @@ using ldap_api.Endpoints;
 using ldap_api.Services;
 using Microsoft.Extensions.Hosting.WindowsServices;
 using Scalar.AspNetCore;
+using Serilog;
 
 var options = new WebApplicationOptions
 {
@@ -15,6 +16,10 @@ var options = new WebApplicationOptions
 var builder = WebApplication.CreateBuilder(options);
 
 builder.Host.UseWindowsService();
+
+// Serilog — reads the "Serilog" section from appsettings.json
+builder.Host.UseSerilog((context, config) =>
+    config.ReadFrom.Configuration(context.Configuration));
 
 // Configuration
 builder.Services.Configure<AdSettings>(builder.Configuration.GetSection("AdSettings"));
@@ -32,7 +37,7 @@ var app = builder.Build();
 app.MapOpenApi();
 app.MapScalarApiReference();
 
-// Convenience redirect: /swagger -> /scalar/v1
+// Convenience redirect: /swagger → /scalar/v1
 app.MapGet("/swagger", () => Results.Redirect("/scalar/v1")).ExcludeFromDescription();
 
 // Endpoints

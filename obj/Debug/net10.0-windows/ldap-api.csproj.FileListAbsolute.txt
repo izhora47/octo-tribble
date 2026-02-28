@@ -395,3 +395,14 @@
 /home/nik/projects/ldap-api/obj/Debug/net10.0-windows/ldap-api.pdb
 /home/nik/projects/ldap-api/obj/Debug/net10.0-windows/ldap-api.genruntimeconfig.cache
 /home/nik/projects/ldap-api/obj/Debug/net10.0-windows/ref/ldap-api.dll
+/home/nik/projects/ldap-api/bin/Debug/net10.0-windows/Microsoft.Extensions.DependencyModel.dll
+/home/nik/projects/ldap-api/bin/Debug/net10.0-windows/Serilog.dll
+/home/nik/projects/ldap-api/bin/Debug/net10.0-windows/Serilog.AspNetCore.dll
+/home/nik/projects/ldap-api/bin/Debug/net10.0-windows/Serilog.Extensions.Hosting.dll
+/home/nik/projects/ldap-api/bin/Debug/net10.0-windows/Serilog.Extensions.Logging.dll
+/home/nik/projects/ldap-api/bin/Debug/net10.0-windows/Serilog.Formatting.Compact.dll
+/home/nik/projects/ldap-api/bin/Debug/net10.0-windows/Serilog.Settings.Configuration.dll
+/home/nik/projects/ldap-api/bin/Debug/net10.0-windows/Serilog.Sinks.Console.dll
+/home/nik/projects/ldap-api/bin/Debug/net10.0-windows/Serilog.Sinks.Debug.dll
+/home/nik/projects/ldap-api/bin/Debug/net10.0-windows/Serilog.Sinks.File.dll
+/home/nik/projects/ldap-api/obj/Debug/net10.0-windows/ldap-api.sourcelink.json

@@ -22,36 +22,37 @@ public class ExchangeService : IExchangeService
     // Public interface
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Full mailbox enable flow:
-    ///   1. Get-Mailbox   — check if a mailbox already exists
-    ///   2. Enable-Mailbox — create the mailbox (skipped if already exists)
-    ///   3. Set-Mailbox   — unhide from address lists
-    ///   4. Set-CASMailbox — enable ActiveSync + OWA
-    /// The configure steps always run, making the call idempotent.
-    /// </summary>
     public async Task<ExchangeMailboxResponse> EnableMailboxAsync(string samAccountName, CancellationToken ct = default)
     {
         return await Task.Run(() =>
         {
-            using var runspace = CreateExchangeRunspace();
+            _logger.LogInformation("EnableMailbox started | sam={Sam}", samAccountName);
 
+            using var runspace = CreateExchangeRunspace();
+            _logger.LogDebug("Exchange runspace opened | sam={Sam}", samAccountName);
+
+            _logger.LogDebug("Checking mailbox existence (Get-Mailbox) | sam={Sam}", samAccountName);
             var alreadyEnabled = MailboxExists(runspace, samAccountName);
+            _logger.LogInformation("Mailbox exists: {Exists} | sam={Sam}", alreadyEnabled, samAccountName);
 
             if (!alreadyEnabled)
             {
+                _logger.LogInformation("Running Enable-Mailbox | sam={Sam}", samAccountName);
                 RunCommand(runspace, "Enable-Mailbox",
                     ps => ps.AddParameter("Identity", samAccountName),
                     samAccountName);
+                _logger.LogInformation("Enable-Mailbox completed | sam={Sam}", samAccountName);
             }
 
-            // Configure regardless — ensures idempotency on repeat calls
+            _logger.LogDebug("Running Set-Mailbox (unhide from address lists) | sam={Sam}", samAccountName);
             RunCommand(runspace, "Set-Mailbox",
                 ps => ps
                     .AddParameter("Identity", samAccountName)
                     .AddParameter("HiddenFromAddressListsEnabled", false),
                 samAccountName);
+            _logger.LogDebug("Set-Mailbox completed | sam={Sam}", samAccountName);
 
+            _logger.LogDebug("Running Set-CASMailbox (ActiveSync + OWA) | sam={Sam}", samAccountName);
             RunCommand(runspace, "Set-CASMailbox",
                 ps => ps
                     .AddParameter("Identity", samAccountName)
@@ -59,9 +60,10 @@ public class ExchangeService : IExchangeService
                     .AddParameter("OWAforDevicesEnabled", true)
                     .AddParameter("OWAEnabled", true),
                 samAccountName);
+            _logger.LogDebug("Set-CASMailbox completed | sam={Sam}", samAccountName);
 
             _logger.LogInformation(
-                "Mailbox for {SamAccountName} enabled (wasAlreadyEnabled={Already})",
+                "EnableMailbox completed | sam={Sam}, wasAlreadyEnabled={Already}",
                 samAccountName, alreadyEnabled);
 
             return new ExchangeMailboxResponse
@@ -80,15 +82,19 @@ public class ExchangeService : IExchangeService
     {
         return await Task.Run(() =>
         {
-            using var runspace = CreateExchangeRunspace();
+            _logger.LogInformation("DisableMailbox started | sam={Sam}", samAccountName);
 
+            using var runspace = CreateExchangeRunspace();
+            _logger.LogDebug("Exchange runspace opened | sam={Sam}", samAccountName);
+
+            _logger.LogInformation("Running Disable-Mailbox | sam={Sam}", samAccountName);
             RunCommand(runspace, "Disable-Mailbox",
                 ps => ps
                     .AddParameter("Identity", samAccountName)
                     .AddParameter("Confirm", false),
                 samAccountName);
 
-            _logger.LogInformation("Mailbox for {SamAccountName} disabled", samAccountName);
+            _logger.LogInformation("DisableMailbox completed | sam={Sam}", samAccountName);
 
             return new ExchangeMailboxResponse
             {
@@ -141,7 +147,7 @@ public class ExchangeService : IExchangeService
 
         if (string.IsNullOrWhiteSpace(_settings.ServiceAccountUsername))
         {
-            // Use the Windows service identity (Kerberos / machine account)
+            // Use the Windows service identity (gMSA or machine account) — no password needed
             connectionInfo = new WSManConnectionInfo(uri, "Microsoft.Exchange", PSCredential.Empty);
             connectionInfo.AuthenticationMechanism = AuthenticationMechanism.Kerberos;
         }

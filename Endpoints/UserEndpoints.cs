@@ -14,20 +14,25 @@ public static class UserEndpoints
             .WithName("CreateUser")
             .WithSummary("Create a new AD user account")
             .WithDescription(
-                "Generates a unique sAMAccountName (3+2 / 2+3 / 3+3 strategy), " +
-                "generates a random password, creates the user in Active Directory, " +
-                "and returns the generated credentials.");
+                "Generates sAMAccountName (3+2 / 2+3 / 3+3 strategy, Cyrillic transliterated), " +
+                "generates a random password, creates the account in the OU resolved from " +
+                "office→OU mapping or DefaultUserOu, and returns the generated credentials.");
 
         group.MapPut("/", UpdateUser)
             .WithName("UpdateUser")
             .WithSummary("Update AD user attributes by employeeID")
             .WithDescription(
-                "Locates the user by employeeID. Only non-null fields are written. " +
-                "Set UserAccountControl to 'disabled' to disable the account (accounts are never deleted).");
+                "Finds user by employeeID. Only non-null fields are written. " +
+                "Set UserAccountControl to 'disabled'/'enabled' to change account state. " +
+                "When UpdateDisplayName=true and names change, the CN is also renamed.");
 
-        group.MapGet("/{samAccountName}", GetUser)
-            .WithName("GetUser")
+        group.MapGet("/by-sam/{samAccountName}", GetUser)
+            .WithName("GetUserBySam")
             .WithSummary("Get AD user by sAMAccountName");
+
+        group.MapGet("/by-employee-id/{employeeId}", GetUserByEmployeeId)
+            .WithName("GetUserByEmployeeId")
+            .WithSummary("Get AD user by employeeID");
     }
 
     private static async Task<IResult> CreateUser(CreateUserRequest request, IAdService adService)
@@ -35,7 +40,7 @@ public static class UserEndpoints
         try
         {
             var result = await adService.CreateUserAsync(request);
-            return Results.Created($"/api/users/{result.SamAccountName}",
+            return Results.Created($"/api/users/by-sam/{result.SamAccountName}",
                 ApiResponse<CreateUserResponse>.Ok(result));
         }
         catch (InvalidOperationException ex)
@@ -70,6 +75,23 @@ public static class UserEndpoints
         try
         {
             var result = await adService.GetUserAsync(samAccountName);
+            return Results.Ok(ApiResponse<UserResponse>.Ok(result));
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return Results.NotFound(ApiResponse<UserResponse>.Fail(ex.Message));
+        }
+        catch (Exception ex)
+        {
+            return Results.Problem(ex.Message);
+        }
+    }
+
+    private static async Task<IResult> GetUserByEmployeeId(string employeeId, IAdService adService)
+    {
+        try
+        {
+            var result = await adService.GetUserByEmployeeIdAsync(employeeId);
             return Results.Ok(ApiResponse<UserResponse>.Ok(result));
         }
         catch (KeyNotFoundException ex)

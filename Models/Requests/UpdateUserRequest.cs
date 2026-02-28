@@ -23,4 +23,10 @@ public class UpdateUserRequest
     /// Null means no change. Use "disabled" instead of deleting — accounts are never deleted via this API.
     /// </summary>
     public string? UserAccountControl { get; set; }
+
+    /// <summary>
+    /// EmployeeID of the manager. The manager's DN will be looked up in AD and written
+    /// to the manager attribute. Leave null to skip manager assignment.
+    /// </summary>
+    public string? ManagerEmployeeId { get; set; }
 }
