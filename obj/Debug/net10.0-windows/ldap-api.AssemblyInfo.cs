@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("ldap-api")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+acf0ae881d169370618177ee368bd045828cd9ac")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+d9e86453692991b6d9fa1159ee86579e7f902019")]
 [assembly: System.Reflection.AssemblyProductAttribute("ldap-api")]
 [assembly: System.Reflection.AssemblyTitleAttribute("ldap-api")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

@@ -4,6 +4,7 @@ using ldap_api.Services;
 using Microsoft.Extensions.Hosting.WindowsServices;
 using Scalar.AspNetCore;
 using Serilog;
+using Serilog.Events;
 
 var options = new WebApplicationOptions
 {
@@ -17,9 +18,25 @@ var builder = WebApplication.CreateBuilder(options);
 
 builder.Host.UseWindowsService();
 
-// Serilog — reads the "Serilog" section from appsettings.json
+// Serilog — configured programmatically; only the log file path is read from appsettings.json.
+// (Avoid ReadFrom.Configuration: it uses reflection to discover sink assemblies at startup,
+//  which can hang under net10.0-windows.)
 builder.Host.UseSerilog((context, config) =>
-    config.ReadFrom.Configuration(context.Configuration));
+{
+    var logPath = context.Configuration["LogSettings:FilePath"] ?? "logs\\ldap-api-.log";
+
+    config
+        .MinimumLevel.Information()
+        .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
+        .MinimumLevel.Override("System", LogEventLevel.Warning)
+        .Enrich.FromLogContext()
+        .WriteTo.Console(
+            outputTemplate: "{Timestamp:HH:mm:ss} [{Level:u3}] {SourceContext} {Message:lj}{NewLine}{Exception}")
+        .WriteTo.File(
+            logPath,
+            rollingInterval: RollingInterval.Day,
+            outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {SourceContext} {Message:lj}{NewLine}{Exception}");
+});
 
 // Configuration
 builder.Services.Configure<AdSettings>(builder.Configuration.GetSection("AdSettings"));
