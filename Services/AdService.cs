@@ -122,14 +122,16 @@ public class AdService : IAdService
             var (samAccountName, algoIndex) = ResolveSamAccountName(domainContext, request.FirstName, request.LastName);
             var password = GeneratePassword();
 
-            // Email + UPN share the same local-part; suffix tracks which SAM algorithm was used:
-            //   algorithm 0 → firstName.lastName        (no suffix)
-            //   algorithm 1 → firstName.lastName1
-            //   algorithm 2 → firstName.lastName2
-            var localPart = $"{ToEmailSafe(request.FirstName)}.{ToEmailSafe(request.LastName)}"
-                            + (algoIndex == 0 ? "" : algoIndex.ToString());
-            var email = $"{localPart}@{_settings.EmailDomain}";
-            var upn   = $"{localPart}@{_settings.Domain}";
+            // Suffix tracks which SAM algorithm was used; applied to CN, email, and UPN
+            // so all three stay unique when the same first+last name already exists:
+            //   algorithm 0 → no suffix     CN=John Doe          john.doe@…
+            //   algorithm 1 → suffix "1"    CN=John Doe1         john.doe1@…
+            //   algorithm 2 → suffix "2"    CN=John Doe2         john.doe2@…
+            var suffix    = algoIndex == 0 ? "" : algoIndex.ToString();
+            var localPart = $"{ToEmailSafe(request.FirstName)}.{ToEmailSafe(request.LastName)}{suffix}";
+            var email     = $"{localPart}@{_settings.EmailDomain}";
+            var upn       = $"{localPart}@{_settings.Domain}";
+            var cn        = $"{request.FirstName} {request.LastName}{suffix}";
 
             // Determine target OU: explicit override → office mapping → default
             var ouPath = ResolveOu(request.TargetOu, request.Office);
@@ -138,7 +140,7 @@ public class AdService : IAdService
             using var ouContext = CreateOuContext(ouPath);
             var user = new UserPrincipal(ouContext)
             {
-                Name              = $"{request.FirstName} {request.LastName}",
+                Name              = cn,
                 GivenName         = request.FirstName,
                 Surname           = request.LastName,
                 DisplayName       = $"{request.FirstName} {request.LastName}",
