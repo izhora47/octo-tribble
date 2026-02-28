@@ -112,9 +112,24 @@ public class AdService : IAdService
                 request.EmployeeId, request.FirstName, request.LastName);
 
             using var domainContext = CreateDomainContext();
-            var samAccountName = ResolveSamAccountName(domainContext, request.FirstName, request.LastName);
+
+            // Guard: reject if this employeeID is already in use
+            var existingDn = FindDnByEmployeeId(request.EmployeeId);
+            if (existingDn is not null)
+                throw new InvalidOperationException(
+                    $"A user with employeeID '{request.EmployeeId}' already exists in Active Directory.");
+
+            var (samAccountName, algoIndex) = ResolveSamAccountName(domainContext, request.FirstName, request.LastName);
             var password = GeneratePassword();
-            var email = $"{ToEmailSafe(request.FirstName)}.{ToEmailSafe(request.LastName)}@{_settings.EmailDomain}";
+
+            // Email + UPN share the same local-part; suffix tracks which SAM algorithm was used:
+            //   algorithm 0 → firstName.lastName        (no suffix)
+            //   algorithm 1 → firstName.lastName1
+            //   algorithm 2 → firstName.lastName2
+            var localPart = $"{ToEmailSafe(request.FirstName)}.{ToEmailSafe(request.LastName)}"
+                            + (algoIndex == 0 ? "" : algoIndex.ToString());
+            var email = $"{localPart}@{_settings.EmailDomain}";
+            var upn   = $"{localPart}@{_settings.Domain}";
 
             // Determine target OU: explicit override → office mapping → default
             var ouPath = ResolveOu(request.TargetOu, request.Office);
@@ -123,11 +138,12 @@ public class AdService : IAdService
             using var ouContext = CreateOuContext(ouPath);
             var user = new UserPrincipal(ouContext)
             {
+                Name              = $"{request.FirstName} {request.LastName}",
                 GivenName         = request.FirstName,
                 Surname           = request.LastName,
                 DisplayName       = $"{request.FirstName} {request.LastName}",
                 SamAccountName    = samAccountName,
-                UserPrincipalName = $"{samAccountName}@{_settings.Domain}",
+                UserPrincipalName = upn,
                 EmailAddress      = email,
                 Enabled           = true
             };
@@ -324,31 +340,49 @@ public class AdService : IAdService
 
     // ─────────────────────────────────────────────────────────────────────────
     // sAMAccountName generation
-    //   1st: first 3 of firstName + first 2 of lastName  (johdo)
-    //   2nd: first 2 of firstName + first 3 of lastName  (jodoe)
-    //   3rd: first 3 of firstName + first 3 of lastName  (johdoe)
+    //   algorithm 0: first 3 of firstName + first 2 of lastName  (johdo)
+    //   algorithm 1: first 2 of firstName + first 3 of lastName  (jodoe)
+    //   algorithm 2: first 3 of firstName + first 3 of lastName  (johdoe)
+    //
+    // Returns (sam, algorithmIndex) so the caller can derive the matching email.
     // ─────────────────────────────────────────────────────────────────────────
 
-    private string ResolveSamAccountName(PrincipalContext context, string firstName, string lastName)
+    private (string Sam, int AlgorithmIndex) ResolveSamAccountName(
+        PrincipalContext context, string firstName, string lastName)
     {
         var f = ToSamSafe(firstName);
         var l = ToSamSafe(lastName);
 
         var candidates = new[]
         {
-            Take(f, 3) + Take(l, 2),
-            Take(f, 2) + Take(l, 3),
-            Take(f, 3) + Take(l, 3),
-        }.Distinct();
+            Take(f, 3) + Take(l, 2),   // 0
+            Take(f, 2) + Take(l, 3),   // 1
+            Take(f, 3) + Take(l, 3),   // 2
+        };
 
-        foreach (var candidate in candidates)
+        var tried = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        for (var i = 0; i < candidates.Length; i++)
         {
+            var candidate = candidates[i];
+            if (!tried.Add(candidate))
+            {
+                _logger.LogDebug(
+                    "sAMAccountName '{Sam}' (algorithm {Index}) is a duplicate of a previous candidate, skipping",
+                    candidate, i);
+                continue;
+            }
+
             if (!SamExists(context, candidate))
             {
-                _logger.LogInformation("sAMAccountName resolved: '{Sam}'", candidate);
-                return candidate;
+                _logger.LogInformation(
+                    "sAMAccountName resolved: '{Sam}' (algorithm {Index})", candidate, i);
+                return (candidate, i);
             }
-            _logger.LogDebug("sAMAccountName '{Sam}' already taken, trying next candidate", candidate);
+
+            _logger.LogDebug(
+                "sAMAccountName '{Sam}' (algorithm {Index}) already taken, trying next",
+                candidate, i);
         }
 
         throw new InvalidOperationException(
