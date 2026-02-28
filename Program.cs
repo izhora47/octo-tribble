@@ -18,16 +18,22 @@ var builder = WebApplication.CreateBuilder(options);
 
 builder.Host.UseWindowsService();
 
-// Serilog — configured programmatically; only the log file path is read from appsettings.json.
-// (Avoid ReadFrom.Configuration: it uses reflection to discover sink assemblies at startup,
-//  which can hang under net10.0-windows.)
-builder.Host.UseSerilog((context, config) =>
+// Serilog — use AddSerilog (IServiceCollection extension, Serilog.AspNetCore 8+).
+// Avoids hooking IHostBuilder directly, which can deadlock on net10.0-windows
+// when combined with UseWindowsService().
+builder.Services.AddSerilog((_, config) =>
 {
-    var logPath = context.Configuration["LogSettings:FilePath"] ?? "logs\\ldap-api-.log";
+    var logPath = builder.Configuration["LogSettings:FilePath"] ?? "logs\\ldap-api-.log";
+
+    // If the path is relative, anchor it to the content root so the log ends up
+    // next to the executable (important when running as a Windows Service).
+    if (!Path.IsPathRooted(logPath))
+        logPath = Path.Combine(builder.Environment.ContentRootPath, logPath);
 
     config
         .MinimumLevel.Information()
         .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
+        .MinimumLevel.Override("Microsoft.Hosting.Lifetime", LogEventLevel.Information)
         .MinimumLevel.Override("System", LogEventLevel.Warning)
         .Enrich.FromLogContext()
         .WriteTo.Console(
