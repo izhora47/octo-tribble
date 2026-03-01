@@ -1,5 +1,7 @@
 using System.Net.Mail;
+using System.Text;
 using ldap_api.Configuration;
+using ldap_api.Models;
 using ldap_api.Models.Requests;
 using ldap_api.Models.Responses;
 using Microsoft.Extensions.Options;
@@ -54,16 +56,29 @@ public class EmailService : IEmailService
 
     public async Task SendUserUpdatedAsync(
         UserResponse result,
+        IReadOnlyList<ChangeRecord> changes,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(_smtp.MailTo))
             return;
 
-        var body = BuildUpdatedBody(result);
+        var body = BuildUpdatedBody(result, changes);
         await SendAsync("User account updated", body, _smtp.MailTo, ct);
         _logger.LogInformation(
             "Update notification sent to {To} | sam={Sam}",
             _smtp.MailTo, result.SamAccountName);
+    }
+
+    public async Task SendOnboardingEmailAsync(
+        string toEmail,
+        string samAccountName,
+        CancellationToken ct = default)
+    {
+        const string subject = "Welcome";
+        var body = $"Your San is {samAccountName}. Welcome to our company";
+        await SendAsync(subject, body, toEmail, ct);
+        _logger.LogInformation(
+            "Onboarding email sent to {To} | sam={Sam}", toEmail, samAccountName);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -75,7 +90,7 @@ public class EmailService : IEmailService
         CreateUserResponse result,
         bool includePassword)
     {
-        var sb = new System.Text.StringBuilder();
+        var sb = new StringBuilder();
         sb.AppendLine("New user account created:");
         sb.AppendLine();
         sb.AppendLine($"Name     - {request.FirstName}");
@@ -92,16 +107,21 @@ public class EmailService : IEmailService
         return sb.ToString();
     }
 
-    private static string BuildUpdatedBody(UserResponse result)
+    private static string BuildUpdatedBody(UserResponse result, IReadOnlyList<ChangeRecord> changes)
     {
-        var sb = new System.Text.StringBuilder();
+        var sb = new StringBuilder();
         sb.AppendLine("User account updated:");
         sb.AppendLine();
-        sb.AppendLine($"Name     - {result.DisplayName}");
-        sb.AppendLine($"Email    - {result.Email ?? "—"}");
         sb.AppendLine($"Login    - {result.SamAccountName}");
         sb.AppendLine($"ID       - {result.EmployeeId}");
-        sb.AppendLine($"Office   - {result.Office ?? "—"}");
+        sb.AppendLine();
+        sb.AppendLine("Changes:");
+        foreach (var c in changes)
+        {
+            sb.AppendLine($"[{c.Field}]");
+            sb.AppendLine($"  Old value: {c.OldValue ?? "(empty)"}");
+            sb.AppendLine($"  New value: {c.NewValue ?? "(empty)"}");
+        }
         return sb.ToString();
     }
 
@@ -119,7 +139,7 @@ public class EmailService : IEmailService
         }
         catch (Exception ex)
         {
-            // Email failures must never break the user-creation flow
+            // Email failures must never break the user-creation or update flow
             _logger.LogError(ex, "Failed to send email to {To} | subject='{Subject}'", to, subject);
         }
     }

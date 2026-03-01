@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using ldap_api.Configuration;
+using ldap_api.Models;
 using ldap_api.Models.Requests;
 using ldap_api.Models.Responses;
 using Microsoft.Extensions.Options;
@@ -27,39 +28,72 @@ public class AdService : IAdService
 
     private static readonly Dictionary<char, string> CyrillicMap = new()
     {
-        ['А'] = "A",    ['а'] = "a",
-        ['Б'] = "B",    ['б'] = "b",
-        ['В'] = "V",    ['в'] = "v",
-        ['Г'] = "G",    ['г'] = "g",
-        ['Д'] = "D",    ['д'] = "d",
-        ['Е'] = "E",    ['е'] = "e",
-        ['Ё'] = "Yo",   ['ё'] = "yo",
-        ['Ж'] = "Zh",   ['ж'] = "zh",
-        ['З'] = "Z",    ['з'] = "z",
-        ['И'] = "I",    ['и'] = "i",
-        ['Й'] = "Y",    ['й'] = "y",
-        ['К'] = "K",    ['к'] = "k",
-        ['Л'] = "L",    ['л'] = "l",
-        ['М'] = "M",    ['м'] = "m",
-        ['Н'] = "N",    ['н'] = "n",
-        ['О'] = "O",    ['о'] = "o",
-        ['П'] = "P",    ['п'] = "p",
-        ['Р'] = "R",    ['р'] = "r",
-        ['С'] = "S",    ['с'] = "s",
-        ['Т'] = "T",    ['т'] = "t",
-        ['У'] = "U",    ['у'] = "u",
-        ['Ф'] = "F",    ['ф'] = "f",
-        ['Х'] = "Kh",   ['х'] = "kh",
-        ['Ц'] = "Ts",   ['ц'] = "ts",
-        ['Ч'] = "Ch",   ['ч'] = "ch",
-        ['Ш'] = "Sh",   ['ш'] = "sh",
-        ['Щ'] = "Shch", ['щ'] = "shch",
-        ['Ъ'] = "",     ['ъ'] = "",
-        ['Ы'] = "Y",    ['ы'] = "y",
-        ['Ь'] = "",     ['ь'] = "",
-        ['Э'] = "E",    ['э'] = "e",
-        ['Ю'] = "Yu",   ['ю'] = "yu",
-        ['Я'] = "Ya",   ['я'] = "ya",
+        ['А'] = "A",
+        ['а'] = "a",
+        ['Б'] = "B",
+        ['б'] = "b",
+        ['В'] = "V",
+        ['в'] = "v",
+        ['Г'] = "G",
+        ['г'] = "g",
+        ['Д'] = "D",
+        ['д'] = "d",
+        ['Е'] = "E",
+        ['е'] = "e",
+        ['Ё'] = "E",
+        ['ё'] = "e",
+        ['Ж'] = "Zh",
+        ['ж'] = "zh",
+        ['З'] = "Z",
+        ['з'] = "z",
+        ['И'] = "I",
+        ['и'] = "i",
+        ['Й'] = "Iy",
+        ['й'] = "y",
+        ['К'] = "K",
+        ['к'] = "k",
+        ['Л'] = "L",
+        ['л'] = "l",
+        ['М'] = "M",
+        ['м'] = "m",
+        ['Н'] = "N",
+        ['н'] = "n",
+        ['О'] = "O",
+        ['о'] = "o",
+        ['П'] = "P",
+        ['п'] = "p",
+        ['Р'] = "R",
+        ['р'] = "r",
+        ['С'] = "S",
+        ['с'] = "s",
+        ['Т'] = "T",
+        ['т'] = "t",
+        ['У'] = "U",
+        ['у'] = "u",
+        ['Ф'] = "F",
+        ['ф'] = "f",
+        ['Х'] = "Kh",
+        ['х'] = "kh",
+        ['Ц'] = "Ts",
+        ['ц'] = "ts",
+        ['Ч'] = "Ch",
+        ['ч'] = "ch",
+        ['Ш'] = "Sh",
+        ['ш'] = "sh",
+        ['Щ'] = "Sch",
+        ['щ'] = "sch",
+        ['Ъ'] = "",
+        ['ъ'] = "",
+        ['Ы'] = "Y",
+        ['ы'] = "y",
+        ['Ь'] = "",
+        ['ь'] = "",
+        ['Э'] = "E",
+        ['э'] = "e",
+        ['Ю'] = "Yu",
+        ['ю'] = "yu",
+        ['Я'] = "Ya",
+        ['я'] = "ya",
     };
 
     /// <summary>Replaces Cyrillic characters with their Latin equivalents.</summary>
@@ -127,11 +161,11 @@ public class AdService : IAdService
             //   algorithm 0 → no suffix     CN=John Doe          john.doe@…
             //   algorithm 1 → suffix "1"    CN=John Doe1         john.doe1@…
             //   algorithm 2 → suffix "2"    CN=John Doe2         john.doe2@…
-            var suffix    = algoIndex == 0 ? "" : algoIndex.ToString();
+            var suffix = algoIndex == 0 ? "" : algoIndex.ToString();
             var localPart = $"{ToEmailSafe(request.FirstName)}.{ToEmailSafe(request.LastName)}{suffix}";
-            var email     = $"{localPart}@{_settings.EmailDomain}";
-            var upn       = $"{localPart}@{_settings.Domain}";
-            var cn        = $"{request.FirstName} {request.LastName}{suffix}";
+            var email = $"{localPart}@{_settings.EmailDomain}";
+            var upn = $"{localPart}@{_settings.EmailDomain}";
+            var cn = $"{request.FirstName} {request.LastName}{suffix}";
 
             // Determine target OU: explicit override → office mapping → default
             var ouPath = ResolveOu(request.TargetOu, request.Office);
@@ -140,14 +174,15 @@ public class AdService : IAdService
             using var ouContext = CreateOuContext(ouPath);
             var user = new UserPrincipal(ouContext)
             {
-                Name              = cn,
-                GivenName         = request.FirstName,
-                Surname           = request.LastName,
-                DisplayName       = $"{request.FirstName} {request.LastName}",
-                SamAccountName    = samAccountName,
+                Name = cn,
+                GivenName = request.FirstName,
+                Surname = request.LastName,
+                DisplayName = $"{request.FirstName} {request.LastName}",
+                SamAccountName = samAccountName,
                 UserPrincipalName = upn,
-                EmailAddress      = email,
-                Enabled           = true
+                EmailAddress = email,
+                // Default is enabled; "disabled" in the request creates the account disabled
+                Enabled = !string.Equals(request.UserAccountControl, "disabled", StringComparison.OrdinalIgnoreCase)
             };
 
             user.SetPassword(password);
@@ -155,11 +190,19 @@ public class AdService : IAdService
             _logger.LogInformation("UserPrincipal created in AD | sam={Sam}", samAccountName);
 
             SetExtendedAttributes(user,
-                employeeId:  request.EmployeeId,
-                office:      request.Office,
-                company:     request.Company,
-                division:    request.Division,
+                employeeId: request.EmployeeId,
+                office: request.Office,
+                company: request.Company,
+                division: request.Division,
                 description: request.Description);
+
+            // Set creation-only attributes that require DirectoryEntry access
+            var newEntry = (DirectoryEntry)user.GetUnderlyingObject();
+            // Force "must change password at next logon"
+            newEntry.Properties["pwdLastSet"].Value = 0;
+            // extensionAttribute15=1 is monitored by Windows Scheduler to provision the SfB (Skype for Business) account
+            newEntry.Properties["extensionAttribute15"].Value = "1";
+            newEntry.CommitChanges();
 
             AddUserToGroups(user, request.Office);
 
@@ -169,57 +212,78 @@ public class AdService : IAdService
 
             return new CreateUserResponse
             {
-                Status         = "created",
-                EmployeeId     = request.EmployeeId,
+                Status = "created",
+                EmployeeId = request.EmployeeId,
                 SamAccountName = samAccountName,
-                Email          = email,
-                Password       = password
+                Email = email,
+                Password = password
             };
         }, ct);
     }
 
-    public async Task<UserResponse> UpdateUserAsync(UpdateUserRequest request, CancellationToken ct = default)
+    public async Task<UserUpdateResult> UpdateUserAsync(UpdateUserRequest request, CancellationToken ct = default)
     {
         return await Task.Run(() =>
         {
             _logger.LogInformation("UpdateUser started | employeeID={EmployeeId}", request.EmployeeId);
 
             using var context = CreateDomainContext();
-            var user = FindByEmployeeId(context, request.EmployeeId);
+
+            // Scope search to the OU that matches the user's office (when provided and mapped),
+            // avoiding a domain-wide scan.  Falls back to domain-wide if office is unknown.
+            string? searchOuDn = null;
+            if (request.Office is not null)
+                _settings.OfficeOuMappings.TryGetValue(request.Office, out searchOuDn);
+
+            var user = FindByEmployeeId(context, request.EmployeeId, searchOuDn);
             var sam = user.SamAccountName!;
             var entry = (DirectoryEntry)user.GetUnderlyingObject();
 
-            // ── Snapshot old values for change detection and logging ─────────
-            var oldGivenName   = user.GivenName;
-            var oldSurname     = user.Surname;
+            // Guard: refuse to update accounts that have been moved to the disabled-users OU
+            if (user.DistinguishedName?.Contains("OU=Users Disabled", StringComparison.OrdinalIgnoreCase) == true)
+                throw new KeyNotFoundException(
+                    $"User with employeeID '{request.EmployeeId}' is in 'OU=Users Disabled' and cannot be updated.");
+
+            // ── Snapshot old values for change detection ───────────────────────
+            var oldGivenName = user.GivenName;
+            var oldSurname = user.Surname;
             var oldDisplayName = user.DisplayName;
-            var oldIsEnabled   = user.Enabled;
-            var oldOffice      = entry.Properties["physicalDeliveryOfficeName"].Value?.ToString();
-            var oldCompany     = entry.Properties["company"].Value?.ToString();
-            var oldDivision    = entry.Properties["division"].Value?.ToString();
+            var oldIsEnabled = user.Enabled;
+            var oldOffice = entry.Properties["physicalDeliveryOfficeName"].Value?.ToString();
+            var oldCompany = entry.Properties["company"].Value?.ToString();
+            var oldDivision = entry.Properties["division"].Value?.ToString();
             var oldDescription = entry.Properties["description"].Value?.ToString();
-            var oldManager     = entry.Properties["manager"].Value?.ToString();
+            var oldManager = entry.Properties["manager"].Value?.ToString();
+
+            // Local helper: record + log a field change
+            var changes = new List<ChangeRecord>();
+            void Track(string field, string? oldV, string? newV)
+            {
+                changes.Add(new ChangeRecord(field, oldV, newV));
+                LogChange(field, oldV, newV);
+            }
 
             // ── Name / DisplayName ────────────────────────────────────────────
             var nameChanged = false;
             if (_settings.UpdateDisplayName)
             {
-                if (request.FirstName is not null && request.FirstName != oldGivenName)
+                if (!string.IsNullOrEmpty(request.FirstName) && request.FirstName != oldGivenName)
                 {
-                    LogChange("GivenName", oldGivenName, request.FirstName);
+                    Track("GivenName", oldGivenName, request.FirstName);
                     user.GivenName = request.FirstName;
                     nameChanged = true;
                 }
-                if (request.LastName is not null && request.LastName != oldSurname)
+                if (!string.IsNullOrEmpty(request.LastName) && request.LastName != oldSurname)
                 {
-                    LogChange("Surname", oldSurname, request.LastName);
+                    Track("Surname", oldSurname, request.LastName);
                     user.Surname = request.LastName;
                     nameChanged = true;
                 }
                 if (nameChanged)
                 {
                     var newDisplay = $"{user.GivenName} {user.Surname}".Trim();
-                    LogChange("DisplayName", oldDisplayName, newDisplay);
+                    if (newDisplay != oldDisplayName)
+                        Track("DisplayName", oldDisplayName, newDisplay);
                     user.DisplayName = newDisplay;
                 }
             }
@@ -228,11 +292,11 @@ public class AdService : IAdService
             switch (request.UserAccountControl?.ToLowerInvariant())
             {
                 case "disabled" when oldIsEnabled != false:
-                    LogChange("Enabled", oldIsEnabled?.ToString(), "False");
+                    Track("Enabled", oldIsEnabled?.ToString(), "False");
                     user.Enabled = false;
                     break;
                 case "enabled" when oldIsEnabled != true:
-                    LogChange("Enabled", oldIsEnabled?.ToString(), "True");
+                    Track("Enabled", oldIsEnabled?.ToString(), "True");
                     user.Enabled = true;
                     break;
             }
@@ -245,25 +309,25 @@ public class AdService : IAdService
 
             if (request.Office is not null && request.Office != oldOffice)
             {
-                LogChange("physicalDeliveryOfficeName", oldOffice, request.Office);
+                Track("physicalDeliveryOfficeName", oldOffice, request.Office);
                 SetOrClear(entry, "physicalDeliveryOfficeName", request.Office);
                 dirty = true;
             }
             if (request.Company is not null && request.Company != oldCompany)
             {
-                LogChange("company", oldCompany, request.Company);
+                Track("company", oldCompany, request.Company);
                 SetOrClear(entry, "company", request.Company);
                 dirty = true;
             }
             if (request.Division is not null && request.Division != oldDivision)
             {
-                LogChange("division", oldDivision, request.Division);
+                Track("division", oldDivision, request.Division);
                 SetOrClear(entry, "division", request.Division);
                 dirty = true;
             }
             if (request.Description is not null && request.Description != oldDescription)
             {
-                LogChange("description", oldDescription, request.Description);
+                Track("description", oldDescription, request.Description);
                 SetOrClear(entry, "description", request.Description);
                 dirty = true;
             }
@@ -278,7 +342,7 @@ public class AdService : IAdService
                 {
                     if (managerDn != oldManager)
                     {
-                        LogChange("manager", oldManager, managerDn);
+                        Track("manager", oldManager, managerDn);
                         SetOrClear(entry, "manager", managerDn);
                         dirty = true;
                     }
@@ -297,7 +361,7 @@ public class AdService : IAdService
                 _logger.LogDebug("Extended attributes committed | sam={Sam}", sam);
             }
 
-            // ── CN rename (only when names actually changed) ──────────────────
+            // ── CN rename (DN = "CN={FirstName} {LastName}") ─────────────────
             if (nameChanged && _settings.UpdateDisplayName)
             {
                 var newCn = $"CN={user.GivenName} {user.Surname}".Trim();
@@ -308,13 +372,21 @@ public class AdService : IAdService
                 _logger.LogInformation("CN renamed successfully | sam={Sam}", sam);
             }
 
+            if (changes.Count == 0)
+                _logger.LogInformation(
+                    "UpdateUser completed — no changes detected | employeeID={EmployeeId}", request.EmployeeId);
+            else
+                _logger.LogInformation(
+                    "UpdateUser completed | employeeID={EmployeeId}, sam={Sam}, changes={Count}",
+                    request.EmployeeId, sam, changes.Count);
+
             // Re-fetch to return current state (updated DistinguishedName after rename)
             using var refreshed = FindBySam(context, sam);
-            var response = MapToResponse(refreshed);
-
-            _logger.LogInformation(
-                "UpdateUser completed | employeeID={EmployeeId}, sam={Sam}", request.EmployeeId, sam);
-            return response;
+            return new UserUpdateResult
+            {
+                User = MapToResponse(refreshed),
+                Changes = changes
+            };
         }, ct);
     }
 
@@ -405,19 +477,19 @@ public class AdService : IAdService
 
     private static string GeneratePassword(int length = 12)
     {
-        const string upper   = "ABCDEFGHJKLMNPQRSTUVWXYZ";
-        const string lower   = "abcdefghjkmnpqrstuvwxyz";
-        const string digits  = "23456789";
+        const string upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+        const string lower = "abcdefghjkmnpqrstuvwxyz";
+        const string digits = "23456789";
         const string special = "!@#$%*";
-        const string all     = upper + lower + digits + special;
+        const string all = upper + lower + digits + special;
 
         var bytes = new byte[length * 2];
         RandomNumberGenerator.Fill(bytes);
 
         var pwd = new char[length];
-        pwd[0] = upper  [bytes[0] % upper.Length];
-        pwd[1] = lower  [bytes[1] % lower.Length];
-        pwd[2] = digits [bytes[2] % digits.Length];
+        pwd[0] = upper[bytes[0] % upper.Length];
+        pwd[1] = lower[bytes[1] % lower.Length];
+        pwd[2] = digits[bytes[2] % digits.Length];
         pwd[3] = special[bytes[3] % special.Length];
 
         for (var i = 4; i < length; i++)
@@ -472,33 +544,51 @@ public class AdService : IAdService
                 _settings.ServiceAccountUsername, _settings.ServiceAccountPassword)
             : new DirectoryEntry($"LDAP://{_settings.Domain}");
 
+    /// <summary>Creates a DirectoryEntry scoped to a specific OU (for targeted searches).</summary>
+    private DirectoryEntry CreateDirectoryEntryForOu(string ouDn) =>
+        HasServiceAccount()
+            ? new DirectoryEntry($"LDAP://{_settings.Domain}/{ouDn}",
+                _settings.ServiceAccountUsername, _settings.ServiceAccountPassword)
+            : new DirectoryEntry($"LDAP://{_settings.Domain}/{ouDn}");
+
     private bool HasServiceAccount() =>
         !string.IsNullOrWhiteSpace(_settings.ServiceAccountUsername);
 
-    private UserPrincipal FindByEmployeeId(PrincipalContext context, string employeeId)
+    /// <summary>
+    /// Finds a user by employeeID and loads them as UserPrincipal.
+    /// When <paramref name="scopeOuDn"/> is provided the LDAP search is limited to that OU;
+    /// otherwise the entire domain is searched.
+    /// </summary>
+    private UserPrincipal FindByEmployeeId(PrincipalContext context, string employeeId, string? scopeOuDn = null)
     {
-        using var root     = CreateDirectoryEntry();
-        using var searcher = new DirectorySearcher(root)
+        var root = scopeOuDn is not null
+            ? CreateDirectoryEntryForOu(scopeOuDn)
+            : CreateDirectoryEntry();
+
+        using (root)
         {
-            Filter = $"(&(objectClass=user)(objectCategory=person)(employeeID={employeeId}))"
-        };
-        searcher.PropertiesToLoad.Add("distinguishedName");
+            using var searcher = new DirectorySearcher(root)
+            {
+                Filter = $"(&(objectClass=user)(objectCategory=person)(employeeID={employeeId}))"
+            };
+            searcher.PropertiesToLoad.Add("distinguishedName");
 
-        var result = searcher.FindOne()
-            ?? throw new KeyNotFoundException(
-                $"No user with employeeID '{employeeId}' found in Active Directory.");
+            var result = searcher.FindOne()
+                ?? throw new KeyNotFoundException(
+                    $"No user with employeeID '{employeeId}' found in Active Directory.");
 
-        var dn = result.Properties["distinguishedName"][0]!.ToString()!;
+            var dn = result.Properties["distinguishedName"][0]!.ToString()!;
 
-        return UserPrincipal.FindByIdentity(context, IdentityType.DistinguishedName, dn)
-            ?? throw new KeyNotFoundException(
-                $"User with employeeID '{employeeId}' was located in LDAP but could not be loaded as UserPrincipal.");
+            return UserPrincipal.FindByIdentity(context, IdentityType.DistinguishedName, dn)
+                ?? throw new KeyNotFoundException(
+                    $"User with employeeID '{employeeId}' was located in LDAP but could not be loaded as UserPrincipal.");
+        }
     }
 
     /// <summary>Returns the DN of a user by employeeID, or null if not found.</summary>
     private string? FindDnByEmployeeId(string employeeId)
     {
-        using var root     = CreateDirectoryEntry();
+        using var root = CreateDirectoryEntry();
         using var searcher = new DirectorySearcher(root)
         {
             Filter = $"(&(objectClass=user)(objectCategory=person)(employeeID={employeeId}))"
@@ -518,20 +608,20 @@ public class AdService : IAdService
 
     private static void SetExtendedAttributes(
         UserPrincipal user,
-        string? employeeId  = null,
-        string? office      = null,
-        string? company     = null,
-        string? division    = null,
+        string? employeeId = null,
+        string? office = null,
+        string? company = null,
+        string? division = null,
         string? description = null)
     {
         var entry = (DirectoryEntry)user.GetUnderlyingObject();
         var dirty = false;
 
-        if (employeeId  is not null) { SetOrClear(entry, "employeeID",                 employeeId);  dirty = true; }
-        if (office      is not null) { SetOrClear(entry, "physicalDeliveryOfficeName", office);      dirty = true; }
-        if (company     is not null) { SetOrClear(entry, "company",                    company);     dirty = true; }
-        if (division    is not null) { SetOrClear(entry, "division",                   division);    dirty = true; }
-        if (description is not null) { SetOrClear(entry, "description",                description); dirty = true; }
+        if (employeeId is not null) { SetOrClear(entry, "employeeID", employeeId); dirty = true; }
+        if (office is not null) { SetOrClear(entry, "physicalDeliveryOfficeName", office); dirty = true; }
+        if (company is not null) { SetOrClear(entry, "company", company); dirty = true; }
+        if (division is not null) { SetOrClear(entry, "division", division); dirty = true; }
+        if (description is not null) { SetOrClear(entry, "description", description); dirty = true; }
 
         if (dirty) entry.CommitChanges();
     }
@@ -602,12 +692,19 @@ public class AdService : IAdService
         return new UserResponse
         {
             SamAccountName    = user.SamAccountName ?? string.Empty,
+            UserPrincipalName = user.UserPrincipalName ?? string.Empty,
             EmployeeId        = entry.Properties["employeeID"].Value?.ToString() ?? string.Empty,
+            EmployeeNumber    = entry.Properties["employeeNumber"].Value?.ToString(),
+            FirstName         = user.GivenName,
+            LastName          = user.Surname,
             DisplayName       = user.DisplayName ?? string.Empty,
             Email             = user.EmailAddress,
             Office            = entry.Properties["physicalDeliveryOfficeName"].Value?.ToString(),
+            Department        = entry.Properties["department"].Value?.ToString(),
             Company           = entry.Properties["company"].Value?.ToString(),
             Division          = entry.Properties["division"].Value?.ToString(),
+            Title             = entry.Properties["title"].Value?.ToString(),
+            Manager           = entry.Properties["manager"].Value?.ToString(),
             Description       = entry.Properties["description"].Value?.ToString(),
             IsEnabled         = user.Enabled ?? false,
             DistinguishedName = user.DistinguishedName ?? string.Empty

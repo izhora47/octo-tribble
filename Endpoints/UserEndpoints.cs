@@ -23,10 +23,12 @@ public static class UserEndpoints
             .WithName("UpdateUser")
             .WithSummary("Update AD user attributes by employeeID")
             .WithDescription(
-                "Finds user by employeeID. Only non-null fields are written. " +
+                "Finds user by employeeID (scoped to the office OU when office is provided). " +
+                "Returns 404 if the user is in 'OU=Users Disabled'. " +
+                "Only non-null, non-empty fields are written. " +
                 "Set UserAccountControl to 'disabled'/'enabled' to change account state. " +
                 "When UpdateDisplayName=true and names change, the CN is also renamed. " +
-                "Sends a notification email to the admin address on success.");
+                "Sends a notification email (with old and new values) only when at least one field actually changed.");
 
         group.MapGet("/by-sam/{samAccountName}", GetUser)
             .WithName("GetUserBySam")
@@ -62,15 +64,26 @@ public static class UserEndpoints
     }
 
     private static async Task<IResult> UpdateUser(
-        UpdateUserRequest request, IAdService adService, IEmailService emailService)
+        UpdateUserRequest request, IAdService adService, IEmailService emailService,
+        ILogger<UserEndpoints> logger)
     {
         try
         {
-            var result = await adService.UpdateUserAsync(request);
+            var updateResult = await adService.UpdateUserAsync(request);
 
-            _ = emailService.SendUserUpdatedAsync(result);
+            if (updateResult.Changes.Count > 0)
+            {
+                // Send notification only when something actually changed in AD
+                _ = emailService.SendUserUpdatedAsync(updateResult.User, updateResult.Changes);
+            }
+            else
+            {
+                logger.LogInformation(
+                    "UpdateUser: request processed but no changes detected — email suppressed | " +
+                    "employeeID={EmployeeId}", request.EmployeeId);
+            }
 
-            return Results.Ok(ApiResponse<UserResponse>.Ok(result, "User updated successfully."));
+            return Results.Ok(ApiResponse<UserResponse>.Ok(updateResult.User, "User updated successfully."));
         }
         catch (KeyNotFoundException ex)
         {

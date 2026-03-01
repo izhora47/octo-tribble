@@ -22,6 +22,7 @@ ldap-api/
 │   └── ExchangeEndpoints.cs     — defines the /api/exchange route group
 │
 ├── Models/
+│   ├── ChangeRecord.cs          — record(Field, OldValue, NewValue) used by update notifications
 │   ├── Requests/
 │   │   ├── CreateUserRequest.cs
 │   │   ├── UpdateUserRequest.cs
@@ -30,6 +31,7 @@ ldap-api/
 │       ├── ApiResponse.cs       — generic envelope: { success, message, data }
 │       ├── CreateUserResponse.cs
 │       ├── UserResponse.cs
+│       ├── UserUpdateResult.cs  — wraps UserResponse + list of ChangeRecords
 │       └── ExchangeMailboxResponse.cs
 │
 └── Services/
@@ -76,11 +78,11 @@ Serilog is configured programmatically in `Program.cs` (`builder.Services.AddSer
 
    | Algorithm | `sAMAccountName` | `CN` | `userPrincipalName` | `email` |
    |-----------|-----------------|------|---------------------|---------|
-   | 0 | `johdo` | `John Doe` | `john.doe@company.local` | `john.doe@company.com` |
-   | 1 | `jodoe` | `John Doe1` | `john.doe1@company.local` | `john.doe1@company.com` |
-   | 2 | `johdoe` | `John Doe2` | `john.doe2@company.local` | `john.doe2@company.com` |
+   | 0 | `johdo` | `John Doe` | `john.doe@company.com` | `john.doe@company.com` |
+   | 1 | `jodoe` | `John Doe1` | `john.doe1@company.com` | `john.doe1@company.com` |
+   | 2 | `johdoe` | `John Doe2` | `john.doe2@company.com` | `john.doe2@company.com` |
 
-   `DisplayName` never receives a suffix — it is the human-readable name in Outlook and GAL and does not need to be unique.
+   `DisplayName` never receives a suffix — it is always `"FirstName LastName"` and is the human-readable name in Outlook and the GAL.
 
 5. **Password generation.** A 12-character password is built using `RandomNumberGenerator.Fill` to ensure cryptographic quality. The alphabet excludes visually ambiguous characters (I, l, O, 0, 1). Complexity is guaranteed by reserving the first four positions for one uppercase letter, one lowercase letter, one digit, and one special character (`!@#$%*`), then shuffling with Fisher-Yates.
 
@@ -89,19 +91,23 @@ Serilog is configured programmatically in `Program.cs` (`builder.Services.AddSer
    - `AdSettings.OfficeOuMappings[office]` — office name mapped to an OU DN in config
    - `AdSettings.DefaultUserOu` — fallback
 
-7. **Account creation.** `UserPrincipal` is created in the resolved OU with `Name` (CN), `GivenName`, `Surname`, `DisplayName`, `SamAccountName`, `UserPrincipalName`, `EmailAddress`, and `Enabled = true`. The account is saved, then additional LDAP attributes are written via `DirectoryEntry.Properties`: `employeeID`, `physicalDeliveryOfficeName`, `company`, `division`, `description`.
+7. **Account creation.** `UserPrincipal` is created in the resolved OU with `Name` (CN), `GivenName`, `Surname`, `DisplayName`, `SamAccountName`, `UserPrincipalName`, `EmailAddress`. Account state defaults to **enabled**; pass `"userAccountControl": "disabled"` to create the account disabled. The account is saved, then additional LDAP attributes are written via `DirectoryEntry.Properties`: `employeeID`, `physicalDeliveryOfficeName`, `company`, `division`, `description`.
 
-8. **Group membership.** After the account is saved, the user is added to groups in this order:
+8. **Creation-only attributes.** After saving, two attributes are always set via `DirectoryEntry`:
+   - `pwdLastSet = 0` — forces the user to change their password at next logon.
+   - `extensionAttribute15 = "1"` — monitored by Windows Scheduler to provision the SfB (Skype for Business) account.
+
+9. **Group membership.** After the account is saved, the user is added to groups in this order:
    - All groups listed in `AdSettings.GlobalGroups` (applied to every new user)
    - All groups in `AdSettings.OfficeGroupMappings[office]` (for the user's office, if a mapping exists)
 
    If no office mapping exists, only `GlobalGroups` are applied. Each group is located via `GroupPrincipal.FindByIdentity`. If a group name is not found in AD, a warning is logged and that group is skipped — the rest of the creation flow continues normally.
 
-9. **Email notification.** After the AD operation completes successfully:
-   - Recipients in `SmtpSettings.OfficeRecipients[office]` receive a notification with the user's name, email, login (SAM), employeeID, and office — **without** the password.
-   - The admin address (`SmtpSettings.MailTo`) receives the same body **including the password**.
-   - If no office mapping exists in `OfficeRecipients`, only the admin address is notified.
-   - Email failures are caught, logged as errors, and never affect the HTTP response or the AD result.
+10. **Email notification.** After the AD operation completes successfully:
+    - Recipients in `SmtpSettings.OfficeRecipients[office]` receive a notification with the user's name, email, login (SAM), employeeID, and office — **without** the password.
+    - The admin address (`SmtpSettings.MailTo`) receives the same body **including the password**.
+    - If no office mapping exists in `OfficeRecipients`, only the admin address is notified.
+    - Email failures are caught, logged as errors, and never affect the HTTP response or the AD result.
 
 **Response:** `201 Created` with the generated `samAccountName`, `email`, and `password`.
 
@@ -109,9 +115,11 @@ Serilog is configured programmatically in `Program.cs` (`builder.Services.AddSer
 
 ### Update user — `PUT /api/users`
 
-The user is located by `employeeID` using a `DirectorySearcher` query, then loaded as `UserPrincipal` by DN for full attribute access.
+The user is located by `employeeID`. When `office` is included in the request and has a matching `OfficeOuMappings` entry, the LDAP search is scoped to that OU for efficiency. Otherwise the entire domain is searched.
 
-**Only non-null request fields are written.** For each field that actually changes, the old and new values are logged:
+**Disabled-user guard.** Before any write is attempted, the user's `distinguishedName` is checked. If it contains `OU=Users Disabled`, the request is rejected with `404 Not Found` — disabled accounts cannot be updated via this API.
+
+**Only non-null, non-empty request fields are written.** `firstName` and `lastName` are skipped if they are null or an empty string. For each field that actually changes, the old and new values are logged:
 ```
 [physicalDeliveryOfficeName] 'Moscow' → 'NRW'
 [company] '(empty)' → 'Acme Corp'
@@ -121,18 +129,18 @@ The user is located by `employeeID` using a `DirectorySearcher` query, then load
 
 | Request field | LDAP attribute | Notes |
 |---|---|---|
-| `firstName` | `givenName` | Only written when `UpdateDisplayName: true` |
-| `lastName` | `sn` | Only written when `UpdateDisplayName: true` |
-| `office` | `physicalDeliveryOfficeName` | |
+| `firstName` | `givenName` | Skipped if null or empty; only when `UpdateDisplayName: true` |
+| `lastName` | `sn` | Skipped if null or empty; only when `UpdateDisplayName: true` |
+| `office` | `physicalDeliveryOfficeName` | Also used to scope the LDAP search |
 | `company` | `company` | |
 | `division` | `division` | |
 | `description` | `description` | |
-| `userAccountControl` | `userAccountControl` | Accepts `"enabled"` or `"disabled"` |
+| `userAccountControl` | `userAccountControl` | Accepts `"enabled"` or `"disabled"`; null = no change |
 | `managerEmployeeId` | `manager` | Resolved to DN by employeeID lookup |
 
 **Name and CN rename (`UpdateDisplayName: true`).** When `firstName` or `lastName` changes and `UpdateDisplayName` is `true` in settings:
 1. `GivenName`, `Surname`, and `DisplayName` are updated.
-2. The CN is renamed via `DirectoryEntry.Rename("CN=NewFirst NewLast")`, which automatically updates the `DistinguishedName` as well.
+2. The CN is renamed to `CN={FirstName} {LastName}` via `DirectoryEntry.Rename(...)`, which automatically updates the `DistinguishedName` as well.
 3. The user is re-fetched after the rename so the response reflects the new DN.
 
 When `UpdateDisplayName: false`, `firstName` and `lastName` in the request are silently ignored.
@@ -141,7 +149,21 @@ When `UpdateDisplayName: false`, `firstName` and `lastName` in the request are s
 
 **Account state.** `userAccountControl: "disabled"` disables the account; `"enabled"` re-enables it. Any other value (including `null`) leaves the state unchanged. Accounts are never deleted through this API.
 
-**Email notification.** On success, the admin address (`SmtpSettings.MailTo`) receives a notification with the user's current name, email, login, employeeID, and office. Email failures are caught and logged without affecting the response.
+**Email notification.** A notification is sent to the admin address (`SmtpSettings.MailTo`) **only when at least one field actually changed**. If the request contained values identical to what is already stored in AD, the request is logged as "no changes detected" and no email is sent. The email body lists each changed field with its old and new value:
+```
+User account updated:
+
+Login    - johdo
+ID       - 123456789
+
+Changes:
+[physicalDeliveryOfficeName]
+  Old value: Moscow
+  New value: NRW
+[company]
+  Old value: (empty)
+  New value: Acme Corp
+```
 
 **Response:** `200 OK` with the current state of all tracked attributes, including the (possibly updated) `distinguishedName`.
 
@@ -155,7 +177,27 @@ Calls `UserPrincipal.FindByIdentity` with `IdentityType.SamAccountName`. Returns
 
 Runs a `DirectorySearcher` query with `(&(objectClass=user)(objectCategory=person)(employeeID=...))`, resolves the DN, then loads the `UserPrincipal`. Returns `404` if not found.
 
-**Response for both GET endpoints:** same `UserResponse` shape as the update endpoint.
+**Response for both GET endpoints — `UserResponse` shape:**
+
+| Field | Source |
+|---|---|
+| `samAccountName` | `sAMAccountName` |
+| `userPrincipalName` | `userPrincipalName` |
+| `employeeId` | `employeeID` |
+| `employeeNumber` | `employeeNumber` |
+| `firstName` | `givenName` |
+| `lastName` | `sn` |
+| `displayName` | `displayName` |
+| `email` | `mail` |
+| `office` | `physicalDeliveryOfficeName` |
+| `department` | `department` |
+| `company` | `company` |
+| `division` | `division` |
+| `title` | `title` |
+| `manager` | `manager` (DN of manager) |
+| `description` | `description` |
+| `isEnabled` | derived from `userAccountControl` |
+| `distinguishedName` | `distinguishedName` |
 
 ---
 
@@ -167,6 +209,9 @@ Connects to the Exchange Management Shell via WS-Man (`WSManConnectionInfo` → 
 2. **`Enable-Mailbox`** — runs only if no mailbox was found in step 1.
 3. **`Set-Mailbox -HiddenFromAddressListsEnabled $false`** — always runs, ensures the mailbox is visible in the Global Address List.
 4. **`Set-CASMailbox -ActiveSyncEnabled $true -OWAforDevicesEnabled $true -OWAEnabled $true`** — always runs, enables client access protocols.
+5. **Verify and notify.** `MailboxEnabled = true` in the response confirms the mailbox is active (any Exchange cmdlet failure throws an exception). The user is then looked up in AD by `sAMAccountName` to retrieve their `userPrincipalName`. A welcome / onboarding email is sent to that address (fire-and-forget; email failure does not affect the HTTP response).
+
+**Note on UPN = email address.** `userPrincipalName` and the `mail` attribute are always set to the same value during account creation (`firstname.lastname@EmailDomain`), so the UPN is used directly as the onboarding email destination.
 
 If `ServiceAccountUsername` is empty, Kerberos is used with `PSCredential.Empty` (the Windows service identity). Otherwise, `Negotiate` auth is used with the configured credentials.
 
@@ -217,14 +262,14 @@ Runs `Disable-Mailbox -Identity {sam} -Confirm:$false`. The mailbox data is remo
 | Setting | Description |
 |---------|-------------|
 | `LogSettings.FilePath` | Rolling log file path. Relative paths are anchored to the executable directory. The date is inserted before the extension — `logs/ldap-api-20260301.log`. |
-| `AdSettings.Domain` | Internal AD domain used for `PrincipalContext` binding and the domain part of `userPrincipalName`. |
-| `AdSettings.EmailDomain` | External mail domain for the `mail` attribute — often different from the AD domain. |
+| `AdSettings.Domain` | Internal AD domain used for `PrincipalContext` binding. |
+| `AdSettings.EmailDomain` | External mail domain. Used for both the `mail` attribute and `userPrincipalName` — they are always identical. |
 | `AdSettings.DefaultUserOu` | Fallback OU (DN format) for new accounts when no `targetOu` or `OfficeOuMappings` match. |
 | `AdSettings.ServiceAccountUsername` | Account used to bind to AD and authenticate to Exchange. Leave empty to use the Windows service identity (Kerberos). |
 | `AdSettings.ServiceAccountPassword` | Password for the above account. |
 | `AdSettings.ExchangePowerShellUri` | WS-Man endpoint of Exchange Management Shell, e.g. `http://exchange.company.local/PowerShell`. |
 | `AdSettings.UpdateDisplayName` | `true` — name fields in update requests are written and the CN is renamed. `false` — name fields in update requests are ignored. |
-| `AdSettings.OfficeOuMappings` | Maps office name → OU DN. Used to place new accounts in the right OU. |
+| `AdSettings.OfficeOuMappings` | Maps office name → OU DN. Used to place new accounts in the right OU and to scope update searches. |
 | `AdSettings.GlobalGroups` | AD group names that every new user is added to. |
 | `AdSettings.OfficeGroupMappings` | Maps office name → list of AD group names. Applied in addition to `GlobalGroups`. |
 | `SmtpSettings.Server` | SMTP relay hostname or IP. |
@@ -337,9 +382,12 @@ GET http://localhost:5000/health
   "company": "ExampleCompany",
   "division": "Engineering",
   "description": "Test account",
-  "targetOu": null
+  "targetOu": null,
+  "userAccountControl": null
 }
 ```
+
+Omit `userAccountControl` or set it to anything other than `"disabled"` to create the account **enabled** (default). Set to `"disabled"` to create the account disabled.
 
 Cyrillic names are accepted:
 ```json
@@ -401,7 +449,8 @@ Cyrillic names are accepted:
 
 ### PUT /api/users — Update user
 
-Only non-null fields are written. `employeeId` is required and is the lookup key.
+Only non-null, non-empty fields are written. `employeeId` is required and is the lookup key.
+Returns `404` if the user is not found or is in `OU=Users Disabled`.
 
 **Update attributes**
 ```json
@@ -447,12 +496,19 @@ Only non-null fields are written. `employeeId` is required and is the lookup key
   "message": "User updated successfully.",
   "data": {
     "samAccountName": "johdo",
+    "userPrincipalName": "john.doe@company.com",
     "employeeId": "123456789",
+    "employeeNumber": null,
+    "firstName": "John",
+    "lastName": "Doe",
     "displayName": "John Doe",
     "email": "john.doe@company.com",
     "office": "NRW",
+    "department": "Engineering",
     "company": "ExampleCompany",
     "division": "New Division",
+    "title": "Software Engineer",
+    "manager": "CN=Jane Smith,OU=Users,OU=NRW,DC=company,DC=local",
     "description": "Updated description",
     "isEnabled": true,
     "distinguishedName": "CN=John Doe,OU=Users,OU=NRW,DC=company,DC=local"
@@ -460,7 +516,7 @@ Only non-null fields are written. `employeeId` is required and is the lookup key
 }
 ```
 
-**Response 404** — employeeID not found
+**Response 404** — employeeID not found or user is in disabled OU
 ```json
 {
   "success": false,
@@ -488,11 +544,13 @@ GET http://localhost:5000/api/users/by-employee-id/123456789
 
 ### POST /api/exchange/mailbox/enable
 
+Enables the Exchange mailbox and sends a welcome email to the user's UPN address.
+
 ```json
 { "samAccountName": "johdo" }
 ```
 
-**Response 200** — mailbox created
+**Response 200** — mailbox created, onboarding email sent
 ```json
 {
   "success": true,
@@ -506,7 +564,7 @@ GET http://localhost:5000/api/users/by-employee-id/123456789
 }
 ```
 
-**Response 200** — mailbox already existed (settings still reapplied)
+**Response 200** — mailbox already existed (settings still reapplied, onboarding email still sent)
 ```json
 {
   "success": true,

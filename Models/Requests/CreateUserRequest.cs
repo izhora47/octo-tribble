@@ -23,4 +23,10 @@ public class CreateUserRequest
     /// Defaults to AdSettings.DefaultUserOu when omitted.
     /// </summary>
     public string? TargetOu { get; set; }
+
+    /// <summary>
+    /// Set to "disabled" to create the account in a disabled state.
+    /// Any other value (including null) creates the account enabled (default).
+    /// </summary>
+    public string? UserAccountControl { get; set; }
 }

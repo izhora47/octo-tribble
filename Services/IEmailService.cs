@@ -1,3 +1,4 @@
+using ldap_api.Models;
 using ldap_api.Models.Requests;
 using ldap_api.Models.Responses;
 
@@ -16,9 +17,21 @@ public interface IEmailService
         CancellationToken ct = default);
 
     /// <summary>
-    /// Sends a "user updated" notification to SmtpSettings.MailTo only.
+    /// Sends a "user updated" notification to SmtpSettings.MailTo.
+    /// Each changed field is listed with its old and new value.
+    /// Only called when at least one field actually changed.
     /// </summary>
     Task SendUserUpdatedAsync(
         UserResponse result,
+        IReadOnlyList<ChangeRecord> changes,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Sends a welcome / onboarding email directly to the new user.
+    /// Called after the Exchange mailbox has been successfully enabled.
+    /// </summary>
+    Task SendOnboardingEmailAsync(
+        string toEmail,
+        string samAccountName,
         CancellationToken ct = default);
 }

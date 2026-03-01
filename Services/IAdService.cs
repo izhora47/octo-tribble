@@ -6,7 +6,7 @@ namespace ldap_api.Services;
 public interface IAdService
 {
     Task<CreateUserResponse> CreateUserAsync(CreateUserRequest request, CancellationToken ct = default);
-    Task<UserResponse> UpdateUserAsync(UpdateUserRequest request, CancellationToken ct = default);
+    Task<UserUpdateResult> UpdateUserAsync(UpdateUserRequest request, CancellationToken ct = default);
     Task<UserResponse> GetUserAsync(string samAccountName, CancellationToken ct = default);
     Task<UserResponse> GetUserByEmployeeIdAsync(string employeeId, CancellationToken ct = default);
 }
