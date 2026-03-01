@@ -118,6 +118,24 @@ public class AdService : IAdService
     /// </summary>
     private static string ToEmailSafe(string name) => FilterAscii(name, allowDash: true);
 
+    /// <summary>
+    /// Transliterate → strip diacritics → ASCII letters, digits, spaces, and hyphens.
+    /// Preserves original casing. Used for GivenName, Surname, DisplayName, and CN.
+    /// </summary>
+    private static string ToLatinName(string name)
+    {
+        var transliterated = Transliterate(name);
+        var decomposed = transliterated.Normalize(NormalizationForm.FormD);
+        var sb = new StringBuilder(decomposed.Length);
+        foreach (var c in decomposed)
+            if (CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark)
+                sb.Append(c);
+        return new string(
+            sb.ToString()
+              .Where(c => char.IsAsciiLetter(c) || char.IsAsciiDigit(c) || c == '-' || c == ' ')
+              .ToArray());
+    }
+
     private static string FilterAscii(string name, bool allowDash)
     {
         var transliterated = Transliterate(name);
@@ -166,7 +184,9 @@ public class AdService : IAdService
             var localPart = $"{ToEmailSafe(request.FirstName)}.{ToEmailSafe(request.LastName)}{suffix}";
             var email = $"{localPart}@{_settings.EmailDomain}";
             var upn = $"{localPart}@{_settings.EmailDomain}";
-            var cn = $"{request.FirstName} {request.LastName}{suffix}";
+            var latinFirst = ToLatinName(request.FirstName);
+            var latinLast = ToLatinName(request.LastName);
+            var cn = $"{latinFirst} {latinLast}{suffix}";
 
             // Determine target OU: explicit override → office mapping → default
             var ouPath = ResolveOu(request.TargetOu, request.Office);
@@ -176,9 +196,9 @@ public class AdService : IAdService
             var user = new UserPrincipal(ouContext)
             {
                 Name = cn,
-                GivenName = request.FirstName,
-                Surname = request.LastName,
-                DisplayName = $"{request.FirstName} {request.LastName}",
+                GivenName = latinFirst,
+                Surname = latinLast,
+                DisplayName = $"{latinFirst} {latinLast}",
                 SamAccountName = samAccountName,
                 UserPrincipalName = upn,
                 EmailAddress = email,
@@ -273,17 +293,25 @@ public class AdService : IAdService
             var nameChanged = false;
             if (_settings.UpdateDisplayName)
             {
-                if (!string.IsNullOrEmpty(request.FirstName) && request.FirstName != oldGivenName)
+                if (!string.IsNullOrEmpty(request.FirstName))
                 {
-                    Track("GivenName", oldGivenName, request.FirstName);
-                    user.GivenName = request.FirstName;
-                    nameChanged = true;
+                    var latinFirst = ToLatinName(request.FirstName);
+                    if (latinFirst != oldGivenName)
+                    {
+                        Track("GivenName", oldGivenName, latinFirst);
+                        user.GivenName = latinFirst;
+                        nameChanged = true;
+                    }
                 }
-                if (!string.IsNullOrEmpty(request.LastName) && request.LastName != oldSurname)
+                if (!string.IsNullOrEmpty(request.LastName))
                 {
-                    Track("Surname", oldSurname, request.LastName);
-                    user.Surname = request.LastName;
-                    nameChanged = true;
+                    var latinLast = ToLatinName(request.LastName);
+                    if (latinLast != oldSurname)
+                    {
+                        Track("Surname", oldSurname, latinLast);
+                        user.Surname = latinLast;
+                        nameChanged = true;
+                    }
                 }
                 if (nameChanged)
                 {
