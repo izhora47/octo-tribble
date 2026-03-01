@@ -46,10 +46,12 @@ builder.Services.AddSerilog((_, config) =>
 
 // Configuration
 builder.Services.Configure<AdSettings>(builder.Configuration.GetSection("AdSettings"));
+builder.Services.Configure<SmtpSettings>(builder.Configuration.GetSection("SmtpSettings"));
 
 // Services
 builder.Services.AddScoped<IAdService, AdService>();
 builder.Services.AddScoped<IExchangeService, ExchangeService>();
+builder.Services.AddScoped<IEmailService, EmailService>();
 
 // OpenAPI
 builder.Services.AddOpenApi();

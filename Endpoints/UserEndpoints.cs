@@ -16,7 +16,8 @@ public static class UserEndpoints
             .WithDescription(
                 "Generates sAMAccountName (3+2 / 2+3 / 3+3 strategy, Cyrillic transliterated), " +
                 "generates a random password, creates the account in the OU resolved from " +
-                "office→OU mapping or DefaultUserOu, and returns the generated credentials.");
+                "office→OU mapping or DefaultUserOu, adds to configured groups, " +
+                "sends notification email, and returns the generated credentials.");
 
         group.MapPut("/", UpdateUser)
             .WithName("UpdateUser")
@@ -24,7 +25,8 @@ public static class UserEndpoints
             .WithDescription(
                 "Finds user by employeeID. Only non-null fields are written. " +
                 "Set UserAccountControl to 'disabled'/'enabled' to change account state. " +
-                "When UpdateDisplayName=true and names change, the CN is also renamed.");
+                "When UpdateDisplayName=true and names change, the CN is also renamed. " +
+                "Sends a notification email to the admin address on success.");
 
         group.MapGet("/by-sam/{samAccountName}", GetUser)
             .WithName("GetUserBySam")
@@ -35,11 +37,17 @@ public static class UserEndpoints
             .WithSummary("Get AD user by employeeID");
     }
 
-    private static async Task<IResult> CreateUser(CreateUserRequest request, IAdService adService)
+    private static async Task<IResult> CreateUser(
+        CreateUserRequest request, IAdService adService, IEmailService emailService)
     {
         try
         {
             var result = await adService.CreateUserAsync(request);
+
+            // Fire-and-forget is intentional: email failure must not affect the HTTP response.
+            // EmailService already logs the error internally.
+            _ = emailService.SendUserCreatedAsync(request, result);
+
             return Results.Created($"/api/users/by-sam/{result.SamAccountName}",
                 ApiResponse<CreateUserResponse>.Ok(result));
         }
@@ -53,11 +61,15 @@ public static class UserEndpoints
         }
     }
 
-    private static async Task<IResult> UpdateUser(UpdateUserRequest request, IAdService adService)
+    private static async Task<IResult> UpdateUser(
+        UpdateUserRequest request, IAdService adService, IEmailService emailService)
     {
         try
         {
             var result = await adService.UpdateUserAsync(request);
+
+            _ = emailService.SendUserUpdatedAsync(result);
+
             return Results.Ok(ApiResponse<UserResponse>.Ok(result, "User updated successfully."));
         }
         catch (KeyNotFoundException ex)

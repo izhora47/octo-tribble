@@ -161,6 +161,8 @@ public class AdService : IAdService
                 division:    request.Division,
                 description: request.Description);
 
+            AddUserToGroups(user, request.Office);
+
             _logger.LogInformation(
                 "CreateUser completed | employeeID={EmployeeId}, sam={Sam}, email={Email}, ou={Ou}",
                 request.EmployeeId, samAccountName, email, ouPath);
@@ -532,6 +534,53 @@ public class AdService : IAdService
         if (description is not null) { SetOrClear(entry, "description",                description); dirty = true; }
 
         if (dirty) entry.CommitChanges();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Group membership
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private void AddUserToGroups(UserPrincipal user, string? office)
+    {
+        var groupNames = new List<string>(_settings.GlobalGroups);
+
+        if (office is not null &&
+            _settings.OfficeGroupMappings.TryGetValue(office, out var officeGroups))
+        {
+            groupNames.AddRange(officeGroups);
+            _logger.LogInformation(
+                "Office group mapping found for '{Office}': [{Groups}]",
+                office, string.Join(", ", officeGroups));
+        }
+        else
+        {
+            _logger.LogInformation(
+                "No office group mapping for '{Office}'; only GlobalGroups will be applied",
+                office ?? "(none)");
+        }
+
+        if (groupNames.Count == 0)
+        {
+            _logger.LogInformation("No groups configured; skipping group membership step");
+            return;
+        }
+
+        using var context = CreateDomainContext();
+
+        foreach (var groupName in groupNames)
+        {
+            var group = GroupPrincipal.FindByIdentity(context, groupName);
+            if (group is null)
+            {
+                _logger.LogWarning("Group '{Group}' not found in AD; skipping", groupName);
+                continue;
+            }
+
+            group.Members.Add(user);
+            group.Save();
+            _logger.LogInformation(
+                "Added '{Sam}' to group '{Group}'", user.SamAccountName, groupName);
+        }
     }
 
     private static void SetOrClear(DirectoryEntry entry, string attribute, string value)

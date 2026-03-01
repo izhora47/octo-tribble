@@ -1,140 +1,182 @@
 # LDAP API — Active Directory & Exchange Management
 
-A .NET 10 Minimal API designed to run as a **Windows Service** on a domain-joined Windows machine. It provides a REST interface for provisioning and managing Active Directory user accounts and Exchange mailboxes.
+A .NET 10 Minimal API that runs as a **Windows Service** on a domain-joined machine. It exposes a REST interface for automating Active Directory user provisioning, attribute management, Exchange mailbox control, and new-user notifications.
 
 ---
 
-## What it does
+## Application structure
 
-| Operation | Description |
-|-----------|-------------|
-| **Create AD user** | Generates a unique `sAMAccountName`, `CN`, `userPrincipalName`, and `email` — all using the same 3-algorithm strategy. Checks for duplicate `employeeID` before creation. |
-| **Update AD user** | Finds user by `employeeID`, updates any supplied attributes; optionally renames `DisplayName` and `CN`/`DN` when names change (`UpdateDisplayName` setting). |
-| **Disable/Enable AD user** | Triggered by the update endpoint with `userAccountControl: "disabled"/"enabled"` — accounts are **never deleted**. |
-| **Enable mailbox** | Checks for an existing mailbox, creates it if absent, unhides from address lists, enables ActiveSync + OWA. |
-| **Disable mailbox** | Runs `Disable-Mailbox` against the Exchange PowerShell endpoint. |
-
----
-
-## Architecture
+The project follows the standard .NET Minimal API pattern — no controllers, no MVC pipeline. The entry point is `Program.cs`, which wires everything together and then delegates to dedicated files.
 
 ```
 ldap-api/
+├── Program.cs                   — entry point: host setup, DI registration, route mapping
+├── appsettings.json             — all runtime configuration (AD, SMTP, groups, logging)
+│
 ├── Configuration/
-│   └── AdSettings.cs            — strongly-typed settings bound from appsettings.json
+│   ├── AdSettings.cs            — strongly-typed binding for the AdSettings section
+│   └── SmtpSettings.cs          — strongly-typed binding for the SmtpSettings section
+│
 ├── Endpoints/
-│   ├── UserEndpoints.cs         — /api/users route group
-│   └── ExchangeEndpoints.cs     — /api/exchange route group
+│   ├── UserEndpoints.cs         — defines the /api/users route group
+│   └── ExchangeEndpoints.cs     — defines the /api/exchange route group
+│
 ├── Models/
 │   ├── Requests/
 │   │   ├── CreateUserRequest.cs
 │   │   ├── UpdateUserRequest.cs
 │   │   └── ExchangeMailboxRequest.cs
 │   └── Responses/
-│       ├── ApiResponse.cs       — generic wrapper { success, message, data }
+│       ├── ApiResponse.cs       — generic envelope: { success, message, data }
 │       ├── CreateUserResponse.cs
 │       ├── UserResponse.cs
 │       └── ExchangeMailboxResponse.cs
-├── Services/
-│   ├── IAdService / AdService           — AD operations via System.DirectoryServices
-│   └── IExchangeService / ExchangeService — Exchange via PowerShell remoting
-├── Program.cs
-└── appsettings.json
+│
+└── Services/
+    ├── IAdService.cs / AdService.cs         — all AD operations
+    ├── IExchangeService.cs / ExchangeService.cs — Exchange PowerShell remoting
+    └── IEmailService.cs / EmailService.cs   — SMTP notification emails
 ```
+
+### How a request flows through the application
+
+1. `Program.cs` registers configuration (`AdSettings`, `SmtpSettings`), services (`AdService`, `ExchangeService`, `EmailService`), and OpenAPI. It then calls `app.MapUserEndpoints()` and `app.MapExchangeEndpoints()`.
+2. Each of those extension methods (in `Endpoints/`) registers route handlers for its group. Route handlers are plain `static async Task<IResult>` methods — no controller base class needed.
+3. A route handler receives the deserialized request model and the relevant service(s) from the DI container via parameter injection. It calls the service, wraps the result in `ApiResponse<T>`, and returns the appropriate `IResult`.
+4. Services (`AdService`, `ExchangeService`, `EmailService`) each take their configuration via `IOptions<T>` and a typed `ILogger<T>`. They contain all business logic and have no dependency on the HTTP layer.
+5. All AD operations run inside `Task.Run(...)` to avoid blocking the ASP.NET Core thread pool with synchronous `System.DirectoryServices` calls.
+
+### Logging
+
+Serilog is configured programmatically in `Program.cs` (`builder.Services.AddSerilog`). Logs go to both the console and a rolling daily file (`logs/ldap-api-YYYYMMDD.log`). The log path is read from `LogSettings:FilePath`; relative paths are anchored to the executable directory so the log lands in the right place whether running via `dotnet run` or as a Windows Service. `Microsoft.*` infrastructure logs are suppressed below Warning to reduce noise, except for `Microsoft.Hosting.Lifetime` which is kept at Information so startup/shutdown messages remain visible.
 
 ---
 
-## Key logic
+## Functionality
 
-### Cyrillic transliteration
+### Create user — `POST /api/users`
 
-`FirstName` and `LastName` can be provided in Cyrillic. Before any attribute is derived, names are transliterated to Latin (full Russian alphabet map), diacritics are stripped, and only ASCII letters/digits are kept. This applies to `sAMAccountName`, `userPrincipalName`, and `email` local-parts — the original Unicode spelling is stored in `GivenName`, `Surname`, `DisplayName`, and `CN`.
+**Steps performed in order:**
 
-### sAMAccountName generation — 3 algorithms
+1. **Duplicate employeeID check.** A `DirectorySearcher` query runs against AD with `(&(objectClass=user)(objectCategory=person)(employeeID=...))`. If a match is found the request is rejected with `409 Conflict` before any write is attempted.
 
-| Algorithm | Formula | Example (John Doe) |
-|-----------|---------|-------------------|
-| **0** | first **3** of firstName + first **2** of lastName | `johdo` |
-| **1** | first **2** of firstName + first **3** of lastName | `jodoe` |
-| **2** | first **3** of firstName + first **3** of lastName | `johdoe` |
+2. **Cyrillic transliteration.** `FirstName` and `LastName` may be supplied in Cyrillic. Before any derived attribute is computed, names are transliterated character-by-character using a full Russian-alphabet table, diacritics are stripped via Unicode `FormD` normalization, and the result is reduced to ASCII letters and digits. The original Unicode spelling is stored in `GivenName`, `Surname`, `DisplayName`, and `CN` unchanged.
 
-Candidates are tried in order. Duplicate candidates (possible with very short names) are skipped. If all three unique candidates are already taken the API returns `409 Conflict`.
+3. **sAMAccountName generation — 3 algorithms.**
 
-### Consistent naming across attributes
+   | Algorithm | Formula | Example — John Doe |
+   |-----------|---------|-------------------|
+   | 0 | first 3 of firstName + first 2 of lastName | `johdo` |
+   | 1 | first 2 of firstName + first 3 of lastName | `jodoe` |
+   | 2 | first 3 of firstName + first 3 of lastName | `johdoe` |
 
-The algorithm index that produces the available SAM is also used to derive the `CN`, `userPrincipalName`, and `email`, so all four attributes stay unique together:
+   Algorithms are tried in order. Each candidate is checked against AD via `UserPrincipal.FindByIdentity`. If two algorithms produce the same string (can happen with very short names) the duplicate is skipped and does not count as a separate attempt. If all three unique candidates are already taken the request returns `409 Conflict`.
 
-| Algorithm | `sAMAccountName` | `CN` / `DN` | `userPrincipalName` | `email` |
-|-----------|-----------------|-------------|---------------------|---------|
-| 0 | `johdo` | `CN=John Doe` | `john.doe@company.local` | `john.doe@company.com` |
-| 1 | `jodoe` | `CN=John Doe1` | `john.doe1@company.local` | `john.doe1@company.com` |
-| 2 | `johdoe` | `CN=John Doe2` | `john.doe2@company.local` | `john.doe2@company.com` |
+4. **Consistent suffix across all unique attributes.** The algorithm index (0, 1, or 2) that produced the available SAM drives a suffix applied to `CN`, `userPrincipalName`, and `email`, keeping all four attributes unique as a set:
 
-`DisplayName` is always `"John Doe"` (no suffix) — it is the human-readable name shown in Outlook/Teams and does not need to be unique.
+   | Algorithm | `sAMAccountName` | `CN` | `userPrincipalName` | `email` |
+   |-----------|-----------------|------|---------------------|---------|
+   | 0 | `johdo` | `John Doe` | `john.doe@company.local` | `john.doe@company.com` |
+   | 1 | `jodoe` | `John Doe1` | `john.doe1@company.local` | `john.doe1@company.com` |
+   | 2 | `johdoe` | `John Doe2` | `john.doe2@company.local` | `john.doe2@company.com` |
 
-### employeeID uniqueness check
+   `DisplayName` never receives a suffix — it is the human-readable name in Outlook and GAL and does not need to be unique.
 
-Before any account creation work begins, the API searches AD for a user with the same `employeeID`. If one exists, a `409 Conflict` is returned immediately.
+5. **Password generation.** A 12-character password is built using `RandomNumberGenerator.Fill` to ensure cryptographic quality. The alphabet excludes visually ambiguous characters (I, l, O, 0, 1). Complexity is guaranteed by reserving the first four positions for one uppercase letter, one lowercase letter, one digit, and one special character (`!@#$%*`), then shuffling with Fisher-Yates.
 
-### OU resolution (create)
+6. **OU resolution.** Target OU is resolved with the following priority:
+   - `targetOu` field in the request (explicit DN override)
+   - `AdSettings.OfficeOuMappings[office]` — office name mapped to an OU DN in config
+   - `AdSettings.DefaultUserOu` — fallback
 
-Target OU is resolved in this priority order:
+7. **Account creation.** `UserPrincipal` is created in the resolved OU with `Name` (CN), `GivenName`, `Surname`, `DisplayName`, `SamAccountName`, `UserPrincipalName`, `EmailAddress`, and `Enabled = true`. The account is saved, then additional LDAP attributes are written via `DirectoryEntry.Properties`: `employeeID`, `physicalDeliveryOfficeName`, `company`, `division`, `description`.
 
-1. `targetOu` field in the request (explicit override)
-2. `OfficeOuMappings[office]` from `appsettings.json` (office name → OU)
-3. `DefaultUserOu` from `appsettings.json`
+8. **Group membership.** After the account is saved, the user is added to groups in this order:
+   - All groups listed in `AdSettings.GlobalGroups` (applied to every new user)
+   - All groups in `AdSettings.OfficeGroupMappings[office]` (for the user's office, if a mapping exists)
 
-### Update — change detection and logging
+   If no office mapping exists, only `GlobalGroups` are applied. Each group is located via `GroupPrincipal.FindByIdentity`. If a group name is not found in AD, a warning is logged and that group is skipped — the rest of the creation flow continues normally.
 
-Only non-null request fields are written. For each changed field the service logs:
+9. **Email notification.** After the AD operation completes successfully:
+   - Recipients in `SmtpSettings.OfficeRecipients[office]` receive a notification with the user's name, email, login (SAM), employeeID, and office — **without** the password.
+   - The admin address (`SmtpSettings.MailTo`) receives the same body **including the password**.
+   - If no office mapping exists in `OfficeRecipients`, only the admin address is notified.
+   - Email failures are caught, logged as errors, and never affect the HTTP response or the AD result.
+
+**Response:** `201 Created` with the generated `samAccountName`, `email`, and `password`.
+
+---
+
+### Update user — `PUT /api/users`
+
+The user is located by `employeeID` using a `DirectorySearcher` query, then loaded as `UserPrincipal` by DN for full attribute access.
+
+**Only non-null request fields are written.** For each field that actually changes, the old and new values are logged:
 ```
-[GivenName] 'Ivan' → 'Иван'
 [physicalDeliveryOfficeName] 'Moscow' → 'NRW'
+[company] '(empty)' → 'Acme Corp'
 ```
 
-### Update — CN rename
+**Fields that can be updated:**
 
-When `UpdateDisplayName: true` and `FirstName` or `LastName` changes, the service:
-1. Updates `GivenName`, `Surname`, `DisplayName`
-2. Renames the `CN` via `DirectoryEntry.Rename("CN=NewFirst NewLast")` — which also updates the `DistinguishedName`
-3. Re-fetches the user after rename and returns the new DN in the response
+| Request field | LDAP attribute | Notes |
+|---|---|---|
+| `firstName` | `givenName` | Only written when `UpdateDisplayName: true` |
+| `lastName` | `sn` | Only written when `UpdateDisplayName: true` |
+| `office` | `physicalDeliveryOfficeName` | |
+| `company` | `company` | |
+| `division` | `division` | |
+| `description` | `description` | |
+| `userAccountControl` | `userAccountControl` | Accepts `"enabled"` or `"disabled"` |
+| `managerEmployeeId` | `manager` | Resolved to DN by employeeID lookup |
 
-When `UpdateDisplayName: false`, name fields are ignored entirely on update.
+**Name and CN rename (`UpdateDisplayName: true`).** When `firstName` or `lastName` changes and `UpdateDisplayName` is `true` in settings:
+1. `GivenName`, `Surname`, and `DisplayName` are updated.
+2. The CN is renamed via `DirectoryEntry.Rename("CN=NewFirst NewLast")`, which automatically updates the `DistinguishedName` as well.
+3. The user is re-fetched after the rename so the response reflects the new DN.
 
-### Manager assignment
+When `UpdateDisplayName: false`, `firstName` and `lastName` in the request are silently ignored.
 
-Supply `managerEmployeeId` in an update request. The service looks up the manager's `DistinguishedName` by their `employeeID` and writes it to the `manager` LDAP attribute. If the manager is not found a warning is logged and the attribute is left unchanged.
+**Manager assignment.** If `managerEmployeeId` is supplied, a `DirectorySearcher` query finds the manager's `distinguishedName` by their `employeeID`, and writes it to the `manager` attribute. If the manager is not found in AD, a warning is logged and the `manager` attribute is left unchanged — the update does not fail.
 
-### Password generation
+**Account state.** `userAccountControl: "disabled"` disables the account; `"enabled"` re-enables it. Any other value (including `null`) leaves the state unchanged. Accounts are never deleted through this API.
 
-12-character random password containing at least one uppercase letter, one lowercase letter, one digit, and one special character (`!@#$%*`). Visually ambiguous characters (I, l, O, 0, 1) are excluded. Uses `RandomNumberGenerator` + Fisher-Yates shuffle for cryptographic quality.
+**Email notification.** On success, the admin address (`SmtpSettings.MailTo`) receives a notification with the user's current name, email, login, employeeID, and office. Email failures are caught and logged without affecting the response.
 
-### ServiceAccountUsername / ServiceAccountPassword — clarification
-
-These credentials are used to:
-1. Bind to Active Directory (`PrincipalContext` and `DirectoryEntry` / `DirectorySearcher`)
-2. Authenticate against the Exchange PowerShell remoting endpoint (`Negotiate` auth)
-
-They are **not** the Windows service logon account. That is configured separately via Services Manager or `sc.exe` at installation time.
-
-Leave both fields **empty** if the Windows service identity already has the necessary AD and Exchange permissions (gMSA or domain account configured via `sc.exe config obj=`). In that case the API uses Kerberos with the process identity.
-
----
-
-## Prerequisites
-
-- Windows Server joined to the target domain
-- .NET 10 Runtime (or use self-contained publish)
-- A service/admin account with:
-  - **AD**: permission to create/modify user objects in the target OU
-  - **Exchange**: `Recipient Management` role (for `Enable-Mailbox`, `Disable-Mailbox`, `Set-Mailbox`, `Set-CASMailbox`)
-- WinRM enabled on the Exchange server (required for PowerShell remoting)
+**Response:** `200 OK` with the current state of all tracked attributes, including the (possibly updated) `distinguishedName`.
 
 ---
 
-## Configuration
+### Get user by sAMAccountName — `GET /api/users/by-sam/{samAccountName}`
 
-Edit `appsettings.json` (or use environment variables — prefix `AdSettings__`):
+Calls `UserPrincipal.FindByIdentity` with `IdentityType.SamAccountName`. Returns `404` if not found.
+
+### Get user by employeeID — `GET /api/users/by-employee-id/{employeeId}`
+
+Runs a `DirectorySearcher` query with `(&(objectClass=user)(objectCategory=person)(employeeID=...))`, resolves the DN, then loads the `UserPrincipal`. Returns `404` if not found.
+
+**Response for both GET endpoints:** same `UserResponse` shape as the update endpoint.
+
+---
+
+### Enable mailbox — `POST /api/exchange/mailbox/enable`
+
+Connects to the Exchange Management Shell via WS-Man (`WSManConnectionInfo` → `RunspaceFactory.CreateRunspace`). Steps:
+
+1. **`Get-Mailbox`** — checks whether a mailbox already exists for the given `sAMAccountName`. The `wasAlreadyEnabled` flag in the response reflects this.
+2. **`Enable-Mailbox`** — runs only if no mailbox was found in step 1.
+3. **`Set-Mailbox -HiddenFromAddressListsEnabled $false`** — always runs, ensures the mailbox is visible in the Global Address List.
+4. **`Set-CASMailbox -ActiveSyncEnabled $true -OWAforDevicesEnabled $true -OWAEnabled $true`** — always runs, enables client access protocols.
+
+If `ServiceAccountUsername` is empty, Kerberos is used with `PSCredential.Empty` (the Windows service identity). Otherwise, `Negotiate` auth is used with the configured credentials.
+
+### Disable mailbox — `POST /api/exchange/mailbox/disable`
+
+Runs `Disable-Mailbox -Identity {sam} -Confirm:$false`. The mailbox data is removed from Exchange; the AD account itself is not touched.
+
+---
+
+## Configuration reference
 
 ```json
 {
@@ -150,8 +192,23 @@ Edit `appsettings.json` (or use environment variables — prefix `AdSettings__`)
     "ExchangePowerShellUri": "http://exchange-server.company.local/PowerShell",
     "UpdateDisplayName": false,
     "OfficeOuMappings": {
-      "NRW": "OU=Users,OU=NRW,DC=company,DC=local",
+      "NRW":    "OU=Users,OU=NRW,DC=company,DC=local",
       "Moscow": "OU=Users,OU=Moscow,DC=company,DC=local"
+    },
+    "GlobalGroups": ["Domain Users", "VPN-Access"],
+    "OfficeGroupMappings": {
+      "NRW":    ["NRW-Staff", "NRW-Printers"],
+      "Moscow": ["Moscow-Staff"]
+    }
+  },
+  "SmtpSettings": {
+    "Server": "smtp.company.local",
+    "Port": 25,
+    "MailFrom": "it-noreply@company.com",
+    "MailTo": "it-team@company.com",
+    "OfficeRecipients": {
+      "NRW":    ["hr-nrw@company.com", "manager-nrw@company.com"],
+      "Moscow": ["hr-moscow@company.com"]
     }
   }
 }
@@ -159,15 +216,35 @@ Edit `appsettings.json` (or use environment variables — prefix `AdSettings__`)
 
 | Setting | Description |
 |---------|-------------|
-| `LogSettings.FilePath` | Rolling log file path. Relative paths are anchored to the executable directory. Date is inserted before the extension (`ldap-api-20260228.log`). |
-| `Domain` | Internal AD domain — used for `PrincipalContext` binding and the `@domain` part of `userPrincipalName` |
-| `EmailDomain` | Mail domain for the generated `mail` attribute (often differs from AD domain) |
-| `DefaultUserOu` | Fallback OU for new accounts when no `targetOu` or `OfficeOuMappings` match |
-| `ServiceAccountUsername` | LDAP/Exchange bind account. Leave empty to use the Windows service identity (Kerberos) |
-| `ServiceAccountPassword` | Password for the above account |
-| `ExchangePowerShellUri` | WS-Man endpoint of Exchange Management Shell |
-| `UpdateDisplayName` | `true` = allow updating GivenName/Surname/DisplayName/CN on update calls; `false` = name fields are ignored on update |
-| `OfficeOuMappings` | Dictionary mapping office names (from the `office` request field) to target OUs |
+| `LogSettings.FilePath` | Rolling log file path. Relative paths are anchored to the executable directory. The date is inserted before the extension — `logs/ldap-api-20260301.log`. |
+| `AdSettings.Domain` | Internal AD domain used for `PrincipalContext` binding and the domain part of `userPrincipalName`. |
+| `AdSettings.EmailDomain` | External mail domain for the `mail` attribute — often different from the AD domain. |
+| `AdSettings.DefaultUserOu` | Fallback OU (DN format) for new accounts when no `targetOu` or `OfficeOuMappings` match. |
+| `AdSettings.ServiceAccountUsername` | Account used to bind to AD and authenticate to Exchange. Leave empty to use the Windows service identity (Kerberos). |
+| `AdSettings.ServiceAccountPassword` | Password for the above account. |
+| `AdSettings.ExchangePowerShellUri` | WS-Man endpoint of Exchange Management Shell, e.g. `http://exchange.company.local/PowerShell`. |
+| `AdSettings.UpdateDisplayName` | `true` — name fields in update requests are written and the CN is renamed. `false` — name fields in update requests are ignored. |
+| `AdSettings.OfficeOuMappings` | Maps office name → OU DN. Used to place new accounts in the right OU. |
+| `AdSettings.GlobalGroups` | AD group names that every new user is added to. |
+| `AdSettings.OfficeGroupMappings` | Maps office name → list of AD group names. Applied in addition to `GlobalGroups`. |
+| `SmtpSettings.Server` | SMTP relay hostname or IP. |
+| `SmtpSettings.Port` | SMTP port (25 for relay, 587 for submission). |
+| `SmtpSettings.MailFrom` | Sender address on all outgoing notifications. |
+| `SmtpSettings.MailTo` | Admin recipient. Receives all notifications and is the only address that gets the generated password. |
+| `SmtpSettings.OfficeRecipients` | Maps office name → list of email addresses. Receive the create-user notification without the password. |
+
+**ServiceAccountUsername / ServiceAccountPassword note.** These are credentials for AD/Exchange binding — they are **not** the Windows service logon account. The logon account is configured separately via `sc.exe config obj=` or Services Manager. If the service identity already has the required AD and Exchange permissions, leave both fields empty.
+
+---
+
+## Prerequisites
+
+- Windows Server joined to the target domain
+- .NET 10 Runtime (or use self-contained publish)
+- Service account with:
+  - **AD**: Create/modify user objects in the target OUs; read access to look up groups and manager DNs
+  - **Exchange**: `Recipient Management` role for `Enable-Mailbox`, `Disable-Mailbox`, `Set-Mailbox`, `Set-CASMailbox`
+- WinRM enabled on the Exchange server
 
 ---
 
@@ -178,30 +255,27 @@ cd C:\path\to\ldap-api
 dotnet run
 ```
 
-The API starts at `http://localhost:5253` (see `launchSettings.json`).
-
-Open the interactive API explorer: http://localhost:5253/scalar/v1
-(or navigate to http://localhost:5253/swagger — it redirects)
+The API starts at `http://localhost:5253`. Open the interactive explorer at http://localhost:5253/scalar/v1 (or http://localhost:5253/swagger — it redirects).
 
 ---
 
-## Publishing to C:\LDAP_API
+## Publishing
 
 ```powershell
 # Self-contained — no .NET runtime required on the target machine
 dotnet publish -c Release -r win-x64 --self-contained true -o C:\LDAP_API
 
-# Framework-dependent — requires .NET 10 runtime installed on the target machine
+# Framework-dependent — requires .NET 10 runtime on the target machine
 dotnet publish -c Release -r win-x64 --self-contained false -o C:\LDAP_API
 ```
 
-After publishing, edit `C:\LDAP_API\appsettings.json` with the production values.
+After publishing, edit `C:\LDAP_API\appsettings.json` with production values.
 
 ---
 
 ## Installing and managing as a Windows Service
 
-All `sc.exe` commands must be run in an **elevated** (Administrator) command prompt.
+All `sc.exe` commands require an **elevated** command prompt.
 
 ### Install
 
@@ -214,42 +288,34 @@ sc.exe create "LdapApi" ^
 sc.exe description "LdapApi" "Active Directory and Exchange mailbox management REST API"
 ```
 
-> Note: `sc.exe` requires a space after the `=` sign for every parameter.
+> `sc.exe` requires a space after every `=`.
 
-### Set recovery options (restart on failure)
+### Recovery on failure
 
 ```cmd
 sc.exe failure "LdapApi" reset= 86400 actions= restart/5000/restart/10000/restart/30000
 ```
 
-### Configure the service logon account (optional)
-
-By default the service runs as `LocalSystem`. For AD operations you will usually want a dedicated domain account:
+### Set the service logon account
 
 ```cmd
 sc.exe config "LdapApi" obj= "COMPANY\svc-ldapapi" password= "s3cr3t"
 ```
 
-Alternatively set it in **Services Manager** → Properties → Log On tab.
-
-### Start / Stop / Status
+### Start / Stop / Status / Uninstall
 
 ```cmd
 sc.exe start  "LdapApi"
 sc.exe stop   "LdapApi"
 sc.exe query  "LdapApi"
-```
 
-### Uninstall
-
-```cmd
 sc.exe stop   "LdapApi"
 sc.exe delete "LdapApi"
 ```
 
 ---
 
-## API Reference & Test JSON
+## API reference
 
 ### GET /health
 
@@ -275,7 +341,7 @@ GET http://localhost:5000/health
 }
 ```
 
-Cyrillic names are also accepted:
+Cyrillic names are accepted:
 ```json
 {
   "employeeId": "987654321",
@@ -285,7 +351,7 @@ Cyrillic names are also accepted:
 }
 ```
 
-**Response 201** (algorithm 0 — first available SAM)
+**Response 201** — algorithm 0
 ```json
 {
   "success": true,
@@ -300,7 +366,7 @@ Cyrillic names are also accepted:
 }
 ```
 
-**Response 201** (algorithm 1 — `johdo` was taken)
+**Response 201** — algorithm 1 (`johdo` was taken; CN, UPN, email all get suffix `1`)
 ```json
 {
   "success": true,
@@ -315,7 +381,7 @@ Cyrillic names are also accepted:
 }
 ```
 
-**Response 409** — employeeID already exists
+**Response 409** — employeeID already in use
 ```json
 {
   "success": false,
@@ -323,7 +389,7 @@ Cyrillic names are also accepted:
 }
 ```
 
-**Response 409** — all sAMAccountName candidates taken
+**Response 409** — all SAM candidates taken
 ```json
 {
   "success": false,
@@ -335,7 +401,7 @@ Cyrillic names are also accepted:
 
 ### PUT /api/users — Update user
 
-Locate user by `employeeId`. Only non-null fields are written.
+Only non-null fields are written. `employeeId` is required and is the lookup key.
 
 **Update attributes**
 ```json
@@ -349,7 +415,7 @@ Locate user by `employeeId`. Only non-null fields are written.
 }
 ```
 
-**Rename (only when `UpdateDisplayName: true` in appsettings)**
+**Rename** (only applied when `UpdateDisplayName: true` in config)
 ```json
 {
   "employeeId": "123456789",
@@ -358,7 +424,7 @@ Locate user by `employeeId`. Only non-null fields are written.
 }
 ```
 
-**Disable account (offboarding)**
+**Disable account**
 ```json
 {
   "employeeId": "123456789",
@@ -420,16 +486,13 @@ GET http://localhost:5000/api/users/by-employee-id/123456789
 
 ---
 
-### POST /api/exchange/mailbox/enable — Enable mailbox
+### POST /api/exchange/mailbox/enable
 
-**Request**
 ```json
-{
-  "samAccountName": "johdo"
-}
+{ "samAccountName": "johdo" }
 ```
 
-**Response 200** (mailbox newly created)
+**Response 200** — mailbox created
 ```json
 {
   "success": true,
@@ -443,7 +506,7 @@ GET http://localhost:5000/api/users/by-employee-id/123456789
 }
 ```
 
-**Response 200** (mailbox already existed — settings reapplied)
+**Response 200** — mailbox already existed (settings still reapplied)
 ```json
 {
   "success": true,
@@ -459,13 +522,10 @@ GET http://localhost:5000/api/users/by-employee-id/123456789
 
 ---
 
-### POST /api/exchange/mailbox/disable — Disable mailbox
+### POST /api/exchange/mailbox/disable
 
-**Request**
 ```json
-{
-  "samAccountName": "johdo"
-}
+{ "samAccountName": "johdo" }
 ```
 
 **Response 200**
@@ -481,18 +541,3 @@ GET http://localhost:5000/api/users/by-employee-id/123456789
   }
 }
 ```
-
----
-
-## Troubleshooting
-
-| Symptom | Likely cause |
-|---------|-------------|
-| `Access is denied` on AD operations | Service account lacks permissions on the target OU, or wrong credentials in `appsettings.json` |
-| `The server is not operational` | Wrong `Domain` value, or the machine is not domain-joined |
-| `Object already exists` on create | Two users have identical `firstName`/`lastName` and all three SAM candidates + their corresponding CNs exist — create manually |
-| Exchange cmdlet fails with `The term 'Enable-Mailbox' is not recognized` | WinRM not enabled on Exchange server, or wrong `ExchangePowerShellUri` |
-| Exchange cmdlet fails with `Access Denied` | Service account not in the `Recipient Management` Exchange role |
-| All sAMAccountName candidates taken (409) | All three algorithm slots are occupied — create the account manually and assign a unique SAM |
-| Service fails to start | Check Windows Event Viewer → Application log; verify the published path in `sc.exe binpath=`; check that the `logs/` directory is writable |
-| No console output when running `dotnet run` | Expected — ASP.NET Core infrastructure messages (`Microsoft.*`) are filtered to Warning level by Serilog. Startup messages from `Microsoft.Hosting.Lifetime` are still shown. Check the rolling log file in `logs/` for full output. |

@@ -46,4 +46,18 @@ public class AdSettings
     ///   "Moscow": "OU=Users,OU=Moscow,DC=company,DC=local"
     /// </summary>
     public Dictionary<string, string> OfficeOuMappings { get; set; } = new();
+
+    /// <summary>
+    /// AD groups that every new user is added to, regardless of office.
+    /// Example: ["Domain Users", "VPN-Access"]
+    /// </summary>
+    public string[] GlobalGroups { get; set; } = [];
+
+    /// <summary>
+    /// Maps office name to additional AD groups the new user should join.
+    /// Example:
+    ///   "NRW":    ["NRW-Staff", "NRW-Printers"]
+    ///   "Moscow": ["Moscow-Staff"]
+    /// </summary>
+    public Dictionary<string, string[]> OfficeGroupMappings { get; set; } = new();
 }
