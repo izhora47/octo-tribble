@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.DirectoryServices;
 using System.DirectoryServices.AccountManagement;
 using System.Globalization;
@@ -201,7 +202,12 @@ public class AdService : IAdService
             // Force "must change password at next logon"
             newEntry.Properties["pwdLastSet"].Value = 0;
             // extensionAttribute15=1 is monitored by Windows Scheduler to provision the SfB (Skype for Business) account
-            newEntry.Properties["extensionAttribute15"].Value = "1";
+            if (SchemaHasAttribute("extensionAttribute15"))
+                newEntry.Properties["extensionAttribute15"].Value = "1";
+            else
+                _logger.LogWarning(
+                    "Attribute 'extensionAttribute15' not found in AD schema " +
+                    "(Exchange schema extension may not be installed) — skipping | sam={Sam}", samAccountName);
             newEntry.CommitChanges();
 
             AddUserToGroups(user, request.Office);
@@ -624,6 +630,65 @@ public class AdService : IAdService
         if (description is not null) { SetOrClear(entry, "description", description); dirty = true; }
 
         if (dirty) entry.CommitChanges();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Schema helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Cache schema lookups for the process lifetime — the AD schema is immutable at runtime.
+    private static readonly ConcurrentDictionary<string, bool> _schemaCache =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Returns true when <paramref name="ldapDisplayName"/> is defined in the AD schema.
+    /// Results are cached so the schema NC is only queried once per attribute name per process.
+    /// Extension attributes (extensionAttribute1–15) require the Exchange schema extension;
+    /// they will not exist on a plain AD domain without Exchange.
+    /// </summary>
+    private bool SchemaHasAttribute(string ldapDisplayName)
+    {
+        return _schemaCache.GetOrAdd(ldapDisplayName, name =>
+        {
+            try
+            {
+                using var rootDse = HasServiceAccount()
+                    ? new DirectoryEntry($"LDAP://{_settings.Domain}/RootDSE",
+                        _settings.ServiceAccountUsername, _settings.ServiceAccountPassword)
+                    : new DirectoryEntry($"LDAP://{_settings.Domain}/RootDSE");
+
+                var schemaDn = rootDse.Properties["schemaNamingContext"].Value?.ToString();
+                if (schemaDn is null)
+                {
+                    _logger.LogWarning(
+                        "Cannot read schemaNamingContext from RootDSE — " +
+                        "assuming attribute '{Attr}' is absent", name);
+                    return false;
+                }
+
+                using var schemaRoot = HasServiceAccount()
+                    ? new DirectoryEntry($"LDAP://{_settings.Domain}/{schemaDn}",
+                        _settings.ServiceAccountUsername, _settings.ServiceAccountPassword)
+                    : new DirectoryEntry($"LDAP://{_settings.Domain}/{schemaDn}");
+
+                using var searcher = new DirectorySearcher(schemaRoot)
+                {
+                    Filter = $"(&(objectClass=attributeSchema)(lDAPDisplayName={name}))",
+                    SearchScope = SearchScope.OneLevel
+                };
+                searcher.PropertiesToLoad.Add("lDAPDisplayName");
+
+                var exists = searcher.FindOne() is not null;
+                _logger.LogDebug("Schema check: attribute '{Attr}' exists={Exists}", name, exists);
+                return exists;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Schema check failed for attribute '{Attr}' — treating as absent", name);
+                return false;
+            }
+        });
     }
 
     // ─────────────────────────────────────────────────────────────────────────
