@@ -65,7 +65,7 @@ public static class UserEndpoints
 
     private static async Task<IResult> UpdateUser(
         UpdateUserRequest request, IAdService adService, IEmailService emailService,
-        ILogger<UserEndpoints> logger)
+        ILogger logger)
     {
         try
         {
