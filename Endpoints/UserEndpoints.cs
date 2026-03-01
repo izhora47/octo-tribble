@@ -64,8 +64,7 @@ public static class UserEndpoints
     }
 
     private static async Task<IResult> UpdateUser(
-        UpdateUserRequest request, IAdService adService, IEmailService emailService,
-        ILogger logger)
+        UpdateUserRequest request, IAdService adService, IEmailService emailService)
     {
         try
         {
@@ -76,12 +75,7 @@ public static class UserEndpoints
                 // Send notification only when something actually changed in AD
                 _ = emailService.SendUserUpdatedAsync(updateResult.User, updateResult.Changes);
             }
-            else
-            {
-                logger.LogInformation(
-                    "UpdateUser: request processed but no changes detected — email suppressed | " +
-                    "employeeID={EmployeeId}", request.EmployeeId);
-            }
+            // AdService already logs "no changes detected" when the changes list is empty
 
             return Results.Ok(ApiResponse<UserResponse>.Ok(updateResult.User, "User updated successfully."));
         }
