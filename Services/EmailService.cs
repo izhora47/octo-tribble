@@ -28,6 +28,12 @@ public class EmailService : IEmailService
         CreateUserResponse result,
         CancellationToken ct = default)
     {
+        if (!_smtp.SendEmailNotifications)
+        {
+            _logger.LogDebug("Email notifications disabled — skipping create notification | sam={Sam}", result.SamAccountName);
+            return;
+        }
+
         var baseBody = BuildCreatedBody(request, result, includePassword: false);
         var adminBody = BuildCreatedBody(request, result, includePassword: true);
 
@@ -59,6 +65,12 @@ public class EmailService : IEmailService
         IReadOnlyList<ChangeRecord> changes,
         CancellationToken ct = default)
     {
+        if (!_smtp.SendEmailNotifications)
+        {
+            _logger.LogDebug("Email notifications disabled — skipping update notification | sam={Sam}", result.SamAccountName);
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(_smtp.MailTo))
             return;
 
@@ -74,6 +86,12 @@ public class EmailService : IEmailService
         string samAccountName,
         CancellationToken ct = default)
     {
+        if (!_smtp.SendEmailNotifications)
+        {
+            _logger.LogDebug("Email notifications disabled — skipping onboarding email | sam={Sam}", samAccountName);
+            return;
+        }
+
         const string subject = "Welcome";
         var body = $"Your San is {samAccountName}. Welcome to our company";
         await SendAsync(subject, body, toEmail, ct);

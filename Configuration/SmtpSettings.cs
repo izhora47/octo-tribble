@@ -2,6 +2,13 @@ namespace ldap_api.Configuration;
 
 public class SmtpSettings
 {
+    /// <summary>
+    /// Master switch for all outgoing email notifications.
+    /// Set to false to suppress every email (create-user, update, onboarding) without changing other logic.
+    /// Default: false (emails disabled until explicitly enabled in production).
+    /// </summary>
+    public bool SendEmailNotifications { get; set; } = false;
+
     /// <summary>SMTP server hostname or IP, e.g. "smtp.company.local"</summary>
     public string Server { get; set; } = string.Empty;
 
