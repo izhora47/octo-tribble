@@ -666,10 +666,23 @@ public class AdService : IAdService
                 continue;
             }
 
-            group.Members.Add(user);
-            group.Save();
-            _logger.LogInformation(
-                "Added '{Sam}' to group '{Group}'", user.SamAccountName, groupName);
+            try
+            {
+                group.Members.Add(user);
+                group.Save();
+                _logger.LogInformation(
+                    "Added '{Sam}' to group '{Group}'", user.SamAccountName, groupName);
+            }
+            catch (System.DirectoryServices.DirectoryServicesCOMException ex)
+                when (ex.ErrorCode == unchecked((int)0x80071392))
+            {
+                // 0x80071392 = ERROR_OBJECT_ALREADY_EXISTS
+                // Happens when the group is the user's primary group (e.g. Domain Users).
+                // Primary group membership is implicit in AD and cannot be added again explicitly.
+                _logger.LogInformation(
+                    "'{Sam}' is already a member of '{Group}' (primary group or pre-existing membership) — skipping",
+                    user.SamAccountName, groupName);
+            }
         }
     }
 
